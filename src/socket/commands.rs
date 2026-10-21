@@ -79,4 +79,15 @@ pub enum SocketCommand {
     SurfaceFindNext   { req_id: Value, previous: bool, resp_tx: RespTx },
     SurfaceFindClose  { req_id: Value, resp_tx: RespTx },
     SurfaceFindStatus { req_id: Value, resp_tx: RespTx },
+    // agent-status
+    /// `workspace.set_status`: target by workspace UUID or surface UUID; `state` is
+    /// "running" | "needs_input" | "idle" | "error" | "clear".
+    WorkspaceSetStatus {
+        req_id: Value,
+        workspace_id: Option<String>,
+        surface_id: Option<String>,
+        state: String,
+        message: Option<String>,
+        resp_tx: RespTx,
+    },
 }

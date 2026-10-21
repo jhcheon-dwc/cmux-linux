@@ -56,7 +56,7 @@ contrib/wsl/setup.sh
 5. Windows: AutoHotkey v2 설치(winget), 입력 보정 스크립트(한/영키, 휠 가속)를 시작프로그램에 등록하고 실행
 6. Windows: 알림 클릭 처리기 설치, `cmux-focus:` URI를 현재 사용자(HKCU)에 등록
 
-옵션: `--skip-build`(설정만 다시 적용), `--no-windows`(Windows 쪽 작업 생략)
+옵션: `--skip-build`(설정만 다시 적용), `--no-windows`(Windows 쪽 작업 생략), `--claude-hooks`(Claude Code 상태 훅 등록, [아래](#claude-code-상태-표시) 참고)
 
 ### 설치되는 파일
 
@@ -91,6 +91,36 @@ bell = true                   # cmux 창이 비활성일 때 벨 알림 표시
 # CMUX_WORKSPACE_ID, CMUX_WORKSPACE_NAME, CMUX_SURFACE_ID
 command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
 ```
+
+## Claude Code 상태 표시
+
+macOS cmux처럼 사이드바의 워크스페이스마다 에이전트 상태(**Running**, **Needs input**, **Idle**, **Error**)와 짧은 메시지를 보여 줍니다. Claude Code가 권한 확인이나 `AskUserQuestion`/`ExitPlanMode`에서 기다리면 **Needs input**이 됩니다. 터미널 프로그램이 OSC 9;4로 진행률을 보내면 행 아래에 진행 막대가 나옵니다.
+
+cmux는 각 창(pane)의 셸에 `CMUX_WORKSPACE_ID`, `CMUX_SURFACE_ID`, `CMUX_SOCKET_PATH`를 넣어 줍니다. 그래서 창 안에서 실행한 프로그램은 대상을 지정하지 않아도 자기 워크스페이스의 상태를 바꿀 수 있습니다.
+
+```bash
+cmux set-status running --message "빌드 중"   # running | needs_input | idle | error | clear
+cmux set-status clear
+cmux list-workspaces --json                   # status, status_message, unread 포함
+```
+
+Claude Code와 연결하려면 훅을 등록합니다. `cmux claude-hook <이벤트>`가 훅 JSON(stdin)을 읽어 상태를 바꿉니다. cmux 밖이거나 cmux가 꺼져 있으면 아무것도 하지 않고, 항상 바로 종료 코드 0으로 끝나서 Claude Code를 막지 않습니다. 등록되는 훅 명령은 `cmux claude-hook <이벤트> 2>/dev/null || true` 형태라서, `cmux`가 없거나 오래된 버전이어도 Claude Code를 막지 않습니다(Claude Code는 종료 코드 2를 '차단'으로 봅니다).
+
+```bash
+contrib/wsl/setup.sh --skip-build --no-windows --claude-hooks
+```
+
+이 옵션은 [`contrib/claude/hooks.json`](contrib/claude/hooks.json)의 훅을 `~/.claude/settings.json`에 합칩니다. 기존 파일은 `settings.json.bak-<시각>`으로 백업하고, 기존 설정과 훅은 그대로 두며, 이미 등록된 훅은 다시 넣지 않습니다. 패키지 설치 등 다른 단계 없이 훅만 등록하려면 `python3 -I contrib/claude/merge_hooks.py contrib/claude/hooks.json ~/.claude/settings.json`을 실행하거나, `hooks.json`의 `hooks` 내용을 settings.json에 직접 옮기면 됩니다. 등록 후 새로 시작한 Claude Code 세션부터 적용됩니다.
+
+| Claude Code 훅 | 상태 |
+|---|---|
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse` | Running (`PreToolUse`는 도구 이름 표시) |
+| `PreToolUse`(`AskUserQuestion`, `ExitPlanMode`), `PermissionRequest`, `Notification`, `Elicitation` | Needs input |
+| `Stop`, `SessionStart`(자동 압축 `compact` 제외) | Idle |
+| `StopFailure` | Error |
+| `SessionEnd` | 상태 지움 |
+
+워크스페이스의 알림 점(읽지 않음)은 그 워크스페이스로 이동하면 사라집니다. 사이드바 행을 오른쪽 클릭해서 **Mark as Unread / Mark as Read**로 직접 바꿀 수도 있습니다.
 
 ## 사용 시 주의
 

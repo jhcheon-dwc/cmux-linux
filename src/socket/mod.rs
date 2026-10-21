@@ -324,6 +324,16 @@ async fn dispatch_line(
             resp_tx,
         },
 
+        // agent-status
+        "workspace.set_status" => commands::SocketCommand::WorkspaceSetStatus {
+            req_id: req_id.clone(),
+            workspace_id: params.get("workspace_id").and_then(|v| v.as_str()).map(String::from),
+            surface_id: params.get("surface_id").and_then(|v| v.as_str()).map(String::from),
+            state: params.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            message: params.get("message").and_then(|v| v.as_str()).map(String::from),
+            resp_tx,
+        },
+
         _ => commands::SocketCommand::NotImplemented {
             req_id: req_id.clone(),
             method: method.clone(),

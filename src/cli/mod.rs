@@ -6,6 +6,10 @@
 pub mod discovery;
 pub mod format;
 pub mod socket_client;
+// agent-status: shared, GTK-free status/hook logic (also compiled into cmux-app).
+#[allow(dead_code)]
+#[path = "../agent_status.rs"]
+pub mod agent_status;
 
 pub use socket_client::CliError;
 
@@ -223,6 +227,28 @@ pub enum Commands {
         #[arg(long, env = "CMUX_WORKSPACE_ID")]
         workspace: Option<String>,
     },
+    // agent-status
+    /// Set the agent status shown on a workspace's sidebar row
+    SetStatus {
+        /// running, needs_input, idle, error, or clear
+        #[arg(value_parser = parse_status_arg)]
+        state: String,
+        /// Optional message shown next to the status badge
+        #[arg(long)]
+        message: Option<String>,
+        /// Target workspace UUID (default: $CMUX_WORKSPACE_ID)
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Target surface UUID (default: $CMUX_SURFACE_ID)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Claude Code hook adapter: reads the hook JSON on stdin and updates the
+    /// workspace status. Never fails: always exits 0, silently.
+    ClaudeHook {
+        /// Hook event name (UserPromptSubmit, PreToolUse, Notification, Stop, ...)
+        event: String,
+    },
 }
 
 /// Browser subcommands for `cmux browser <action>` / `cmux browser <surface> <action>`.
@@ -419,6 +445,13 @@ pub enum BrowserCommand {
 
 /// Run the CLI with the parsed arguments.
 pub fn run(cli: Cli) -> Result<(), CliError> {
+    // agent-status: hooks must never block or fail the agent, so this runs before any
+    // fallible socket setup and swallows every error.
+    if let Commands::ClaudeHook { ref event } = cli.command {
+        run_claude_hook(event, cli.socket.as_deref());
+        return Ok(());
+    }
+
     // Resolve socket path: --socket flag > discovery > error
     let socket_path = if let Some(ref path) = cli.socket {
         path.clone()
@@ -704,5 +737,148 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
             }
             ("notification.create", Value::Object(p))
         }
+        // agent-status
+        Commands::SetStatus { state, message, workspace, surface } => {
+            ("workspace.set_status", set_status_params(
+                state,
+                message.as_deref(),
+                workspace.as_deref(),
+                surface.as_deref(),
+                env_id(agent_status::ENV_WORKSPACE_ID).as_deref(),
+                env_id(agent_status::ENV_SURFACE_ID).as_deref(),
+            ))
+        }
+        Commands::ClaudeHook { .. } => unreachable!("ClaudeHook handled separately"),
+    }
+}
+
+// agent-status
+/// clap value parser for `set-status <state>`: accepts what the server accepts
+/// (agent_status::StatusUpdate::parse) and normalizes it to the wire name.
+fn parse_status_arg(s: &str) -> Result<String, String> {
+    agent_status::StatusUpdate::parse(s)
+        .map(|u| u.as_str().to_string())
+        .ok_or_else(|| "expected running, needs_input, idle, error or clear".to_string())
+}
+
+/// Non-empty value of env var `key`.
+fn env_id(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
+/// Params for `workspace.set_status`. Explicit --workspace/--surface win; only when
+/// neither is given do the pane's CMUX_WORKSPACE_ID / CMUX_SURFACE_ID apply.
+fn set_status_params(
+    state: &str,
+    message: Option<&str>,
+    workspace: Option<&str>,
+    surface: Option<&str>,
+    env_workspace: Option<&str>,
+    env_surface: Option<&str>,
+) -> serde_json::Value {
+    let (workspace, surface) = if workspace.is_some() || surface.is_some() {
+        (workspace, surface)
+    } else {
+        (env_workspace, env_surface)
+    };
+    let mut p = serde_json::Map::new();
+    let state = agent_status::StatusUpdate::parse(state).map(|u| u.as_str()).unwrap_or(state);
+    p.insert("state".into(), serde_json::json!(state));
+    if let Some(m) = message {
+        p.insert("message".into(), serde_json::json!(m));
+    }
+    if let Some(w) = workspace {
+        p.insert("workspace_id".into(), serde_json::json!(w));
+    }
+    if let Some(s) = surface {
+        p.insert("surface_id".into(), serde_json::json!(s));
+    }
+    serde_json::Value::Object(p)
+}
+
+/// Read stdin (the hook's JSON payload) with a size cap and a deadline, so a hook run
+/// with an open-but-silent stdin can never hang the agent.
+fn read_hook_stdin(deadline: Duration) -> String {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return String::new();
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        let _ = std::io::stdin().take(4 << 20).read_to_string(&mut buf);
+        let _ = tx.send(buf);
+    });
+    rx.recv_timeout(deadline).unwrap_or_default()
+}
+
+/// `cmux claude-hook <event>`: map a Claude Code hook event to a status update for the
+/// pane's workspace. Silent and infallible; does nothing outside a cmux pane.
+fn run_claude_hook(event: &str, socket_override: Option<&str>) {
+    let input = read_hook_stdin(Duration::from_secs(2));
+    let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::Value::Null);
+    let Some((update, message)) = agent_status::claude_hook_update(event, &payload) else {
+        return;
+    };
+    let workspace = env_id(agent_status::ENV_WORKSPACE_ID);
+    let surface = env_id(agent_status::ENV_SURFACE_ID);
+    if workspace.is_none() && surface.is_none() {
+        return; // Not running inside a cmux pane.
+    }
+    // The pane's own CMUX_SOCKET_PATH names the instance that owns CMUX_WORKSPACE_ID,
+    // so it wins over --socket / CMUX_SOCKET (clap fills `socket_override` from that
+    // env var, which may point at another instance) and over discovery.
+    let socket = match env_id(agent_status::ENV_SOCKET_PATH)
+        .or_else(|| socket_override.filter(|s| !s.is_empty()).map(String::from))
+        .or_else(discovery::discover_socket)
+    {
+        Some(s) => s,
+        None => return,
+    };
+    let Ok(mut client) = socket_client::SocketClient::connect(&socket, Duration::from_millis(1500)) else {
+        return;
+    };
+    let params = set_status_params(
+        update.as_str(),
+        message.as_deref(),
+        None,
+        None,
+        workspace.as_deref(),
+        surface.as_deref(),
+    );
+    let _ = client.call("workspace.set_status", params);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn set_status_params_prefers_explicit_target() {
+        let p = set_status_params("needs-input", Some("확인"), None, Some("sf"), Some("env-ws"), Some("env-sf"));
+        assert_eq!(p, json!({"state": "needs_input", "message": "확인", "surface_id": "sf"}));
+        let p = set_status_params("idle", None, None, None, Some("env-ws"), Some("env-sf"));
+        assert_eq!(p, json!({"state": "idle", "workspace_id": "env-ws", "surface_id": "env-sf"}));
+    }
+
+    #[test]
+    fn set_status_cli_parses() {
+        let cli = Cli::try_parse_from(["cmux", "set-status", "running", "--message", "빌드 중", "--workspace", "w"]).unwrap();
+        match cli.command {
+            Commands::SetStatus { state, message, workspace, surface } => {
+                assert_eq!(state, "running");
+                assert_eq!(message.as_deref(), Some("빌드 중"));
+                assert_eq!(workspace.as_deref(), Some("w"));
+                assert!(surface.is_none());
+            }
+            _ => panic!("expected SetStatus"),
+        }
+        assert!(Cli::try_parse_from(["cmux", "set-status", "bogus"]).is_err());
+        match Cli::try_parse_from(["cmux", "set-status", "Needs-Input"]).unwrap().command {
+            Commands::SetStatus { state, .. } => assert_eq!(state, "needs_input"),
+            _ => panic!("expected SetStatus"),
+        }
+        assert!(Cli::try_parse_from(["cmux", "claude-hook", "Stop"]).is_ok());
     }
 }

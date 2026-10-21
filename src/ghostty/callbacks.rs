@@ -253,6 +253,63 @@ pub unsafe extern "C" fn action_cb(
         }
     }
 
+    // agent-status: OSC 9;4 progress reports. Queue for the main-loop timer in main.rs,
+    // which shows them on the sidebar row of the workspace owning the surface.
+    if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_PROGRESS_REPORT {
+        if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+            let surface_ptr = unsafe { _target.target.surface } as usize;
+            let report = unsafe { action.action.progress_report };
+            let workspace = SURFACE_WORKSPACE.lock().ok().and_then(|m| m.get(&surface_ptr).copied());
+            if let (Some(workspace), Some(state)) = (workspace, progress_state_from_ffi(report.state)) {
+                if let Ok(mut q) = PROGRESS_QUEUE.lock() {
+                    // Bound the queue in case the timer stalls; the drain keeps only
+                    // the latest report per workspace anyway.
+                    if q.len() >= 1024 {
+                        q.drain(..512);
+                    }
+                    q.push(ProgressEvent { workspace, surface: surface_ptr, state, progress: report.progress });
+                }
+            }
+        }
+        return true;
+    }
     // Phase 1 ignores all other actions — return false (unhandled)
     false
+}
+
+// agent-status
+/// Maps surface_ptr (as usize) → UUID of the workspace owning it. Populated at surface
+/// creation; used to route progress reports to a sidebar row.
+pub static SURFACE_WORKSPACE: LazyLock<Mutex<HashMap<usize, uuid::Uuid>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// An OSC 9;4 progress report waiting to be applied on the main thread.
+#[derive(Debug, Clone, Copy)]
+pub struct ProgressEvent {
+    pub workspace: uuid::Uuid,
+    /// Reporting surface (ptr as usize): each pane keeps its own report.
+    pub surface: usize,
+    pub state: crate::agent_status::ProgressState,
+    /// 0-100, or -1 when no percentage was reported.
+    pub progress: i8,
+}
+
+/// Progress reports queued by action_cb, drained by the 100ms timer in main.rs.
+/// A queue (not a single slot like BELL_PENDING) since reports arrive in rapid bursts.
+pub static PROGRESS_QUEUE: Mutex<Vec<ProgressEvent>> = Mutex::new(Vec::new());
+
+fn progress_state_from_ffi(
+    state: crate::ghostty::ffi::ghostty_action_progress_report_state_e,
+) -> Option<crate::agent_status::ProgressState> {
+    use crate::agent_status::ProgressState;
+    use crate::ghostty::ffi;
+    #[allow(non_upper_case_globals)]
+    match state {
+        ffi::ghostty_action_progress_report_state_e_GHOSTTY_PROGRESS_STATE_REMOVE => Some(ProgressState::Remove),
+        ffi::ghostty_action_progress_report_state_e_GHOSTTY_PROGRESS_STATE_SET => Some(ProgressState::Set),
+        ffi::ghostty_action_progress_report_state_e_GHOSTTY_PROGRESS_STATE_ERROR => Some(ProgressState::Error),
+        ffi::ghostty_action_progress_report_state_e_GHOSTTY_PROGRESS_STATE_INDETERMINATE => Some(ProgressState::Indeterminate),
+        ffi::ghostty_action_progress_report_state_e_GHOSTTY_PROGRESS_STATE_PAUSE => Some(ProgressState::Pause),
+        _ => None,
+    }
 }

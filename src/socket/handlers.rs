@@ -111,6 +111,8 @@ pub fn handle_socket_command(
                 "pane.focus_number", "pane.resize", "pane.equalize",
                 // terminal-actions
                 "surface.find", "surface.find_next", "surface.find_close", "surface.find_status",
+                // agent-status
+                "workspace.set_status",
             ];
             let _ = resp_tx.send(ok(req_id, json!({"methods": methods})));
         }
@@ -125,6 +127,11 @@ pub fn handle_socket_command(
                     "id": ws.uuid.to_string(),
                     "title": ws.name,
                     "selected": i == s.active_index,
+                    // agent-status
+                    "status": ws.agent_status.as_ref().map(|st| st.state.as_str()),
+                    "status_message": ws.agent_status.as_ref().and_then(|st| st.message.clone()),
+                    "unread": ws.has_attention,
+                    "progress": ws.progress.map(|(st, v)| json!({"state": st.as_str(), "value": v})),
                 })
             }).collect();
             let _ = resp_tx.send(ok(req_id, json!({"workspaces": list})));
@@ -230,12 +237,10 @@ pub fn handle_socket_command(
             };
             match idx {
                 Some(i) => {
+                    // Rename in place: no switch, so no focus or read-state side effects.
                     let mut s = state.borrow_mut();
-                    let prev_active = s.active_index;
-                    s.switch_to_index(i);
-                    s.rename_active(name);
-                    // Restore previous active index to avoid focus side effect.
-                    s.switch_to_index(prev_active);
+                    let ws_id = s.workspaces[i].id;
+                    s.rename_workspace(ws_id, name);
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
                 }
@@ -273,6 +278,11 @@ pub fn handle_socket_command(
                     let to = position.min(s.workspaces.len().saturating_sub(1));
                     let ws = s.workspaces.remove(from);
                     let engine = s.split_engines.remove(from);
+                    // Keep the sidebar row order in sync with the workspace order.
+                    if let Some(row) = ws.sidebar_row.as_ref().map(|r| r.row.clone()) {
+                        s.sidebar_list.remove(&row);
+                        s.sidebar_list.insert(&row, to as i32);
+                    }
                     s.workspaces.insert(to, ws);
                     s.split_engines.insert(to, engine);
                     // Adjust active_index after reorder.
@@ -282,6 +292,10 @@ pub fn handle_socket_command(
                         s.active_index -= 1;
                     } else if from > s.active_index && to <= s.active_index {
                         s.active_index += 1;
+                    }
+                    // Removing the row from the ListBox drops its selection; restore it.
+                    if let Some(row) = s.workspaces.get(s.active_index).and_then(|w| w.sidebar_row.as_ref()) {
+                        s.sidebar_list.select_row(Some(&row.row));
                     }
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
@@ -966,6 +980,43 @@ pub fn handle_socket_command(
             let mut status = crate::find_bar::status();
             status["window_title"] = json!(crate::header_bar::current_window_title());
             let _ = resp_tx.send(ok(req_id, status));
+        }
+        // agent-status
+        SocketCommand::WorkspaceSetStatus { req_id, workspace_id, surface_id, state: status, message, resp_tx } => {
+            // SOCK-05: No focus side effects; only the sidebar row is updated.
+            // Runs on the GTK main loop because workspace state (Rc<RefCell<AppState>>)
+            // and the row widgets live there; the work is a lookup plus a few label
+            // updates, so hook callers get a fast reply.
+            let Some(update) = crate::agent_status::StatusUpdate::parse(&status) else {
+                let _ = resp_tx.send(err(
+                    req_id,
+                    "invalid_params",
+                    "state must be one of running, needs_input, idle, error, clear",
+                ));
+                return;
+            };
+            if workspace_id.as_deref().unwrap_or("").is_empty() && surface_id.as_deref().unwrap_or("").is_empty() {
+                let _ = resp_tx.send(err(req_id, "invalid_params", "workspace_id or surface_id is required"));
+                return;
+            }
+            let mut s = state.borrow_mut();
+            match s.find_workspace_for_status(workspace_id.as_deref(), surface_id.as_deref()) {
+                Some(i) => {
+                    s.set_workspace_status(i, update, message.as_deref());
+                    let ws = &s.workspaces[i];
+                    let result = json!({
+                        "workspace_id": ws.uuid.to_string(),
+                        "status": ws.agent_status.as_ref().map(|st| st.state.as_str()),
+                        "status_message": ws.agent_status.as_ref().and_then(|st| st.message.clone()),
+                    });
+                    drop(s);
+                    let _ = resp_tx.send(ok(req_id, result));
+                }
+                None => {
+                    drop(s);
+                    let _ = resp_tx.send(err(req_id, "not_found", "workspace not found"));
+                }
+            }
         }
     }
 }

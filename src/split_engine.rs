@@ -312,6 +312,8 @@ pub struct SplitEngine {
     ghostty_app: ffi::ghostty_app_t,
     /// Previously active panes, for "focus previous pane" (pane-nav).
     focus_history: FocusHistory,
+    /// UUID of the owning workspace, exported to new panes as CMUX_WORKSPACE_ID.
+    workspace_uuid: Uuid,
 }
 
 impl SplitEngine {
@@ -323,6 +325,7 @@ impl SplitEngine {
         initial_gl_area: gtk4::GLArea,
         initial_surface_cell: std::rc::Rc<std::cell::RefCell<Option<ffi::ghostty_surface_t>>>,
         pane_id: u64,
+        ids: crate::ghostty::surface::PaneIds,
     ) -> Self {
         // The initial surface may not be realized yet. SplitEngine stores the cell
         // so it can read the surface pointer after realize. For focus/split operations
@@ -335,7 +338,7 @@ impl SplitEngine {
             pane_id,
             gl_area: initial_gl_area,
             surface: surface_placeholder,
-            uuid: Uuid::new_v4(),
+            uuid: ids.surface,
             has_attention: false,
         };
         SplitEngine {
@@ -345,17 +348,10 @@ impl SplitEngine {
             app,
             ghostty_app,
             focus_history: FocusHistory::default(),
+            workspace_uuid: ids.workspace,
         }
     }
 
-    /// Replace the UUID of the initial (root) leaf. Used when the caller already
-    /// tagged the pane's surface with a UUID (see `local_pane_config`).
-    pub fn with_root_uuid(mut self, new_uuid: Uuid) -> Self {
-        if let SplitNode::Leaf { uuid, .. } = &mut self.root {
-            *uuid = new_uuid;
-        }
-        self
-    }
 
     /// Update the surface pointer for a leaf after realize.
     /// Recursively searches the tree (D-10: works for ALL leaves, not just root).
@@ -387,9 +383,10 @@ impl SplitEngine {
         ghostty_app: ffi::ghostty_app_t,
         data: &SplitNodeData,
         active_pane_uuid: Option<&str>,
+        workspace_uuid: Uuid,
     ) -> Option<Self> {
         let mut next_pane_id: u64 = 1;
-        let root = Self::node_from_data(&app, ghostty_app, data, &mut next_pane_id, 0)?;
+        let root = Self::node_from_data(&app, ghostty_app, data, &mut next_pane_id, 0, workspace_uuid)?;
         // Find active pane by saved UUID, or fall back to first leaf
         let active_id = active_pane_uuid
             .and_then(|uuid_str| root.find_pane_id_by_uuid(uuid_str))
@@ -405,6 +402,7 @@ impl SplitEngine {
             app,
             ghostty_app,
             focus_history: FocusHistory::default(),
+            workspace_uuid,
         })
     }
 
@@ -414,6 +412,7 @@ impl SplitEngine {
         data: &SplitNodeData,
         next_pane_id: &mut u64,
         depth: u32,
+        workspace_uuid: Uuid,
     ) -> Option<SplitNode> {
         if depth > 16 {
             eprintln!("cmux: session restore tree depth > 16, falling back (D-14)");
@@ -427,10 +426,11 @@ impl SplitEngine {
                 // nil-UUID leaves; give those a fresh one so restored panes never
                 // share an identity (or a CMUX_SURFACE_ID).
                 let uuid = if surface_uuid.is_nil() { Uuid::new_v4() } else { *surface_uuid };
+                let ids = crate::ghostty::surface::PaneIds { workspace: workspace_uuid, surface: uuid };
                 // Create surface — realize callback will create Ghostty surface and wire registries
-                let config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW, uuid);
+                let config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW);
                 let (gl_area, _surface_cell) =
-                    crate::ghostty::surface::create_surface(app, ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+                    crate::ghostty::surface::create_surface(app, ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, ids);
                 // Phase 9: Attach right-click context menu (D-08)
                 attach_terminal_context_menu(&gl_area);
                 let surface_placeholder: ffi::ghostty_surface_t = std::ptr::null_mut();
@@ -443,8 +443,8 @@ impl SplitEngine {
                 })
             }
             SplitNodeData::Split { orientation, ratio, start, end } => {
-                let start_node = Self::node_from_data(app, ghostty_app, start, next_pane_id, depth + 1)?;
-                let end_node = Self::node_from_data(app, ghostty_app, end, next_pane_id, depth + 1)?;
+                let start_node = Self::node_from_data(app, ghostty_app, start, next_pane_id, depth + 1, workspace_uuid)?;
+                let end_node = Self::node_from_data(app, ghostty_app, end, next_pane_id, depth + 1, workspace_uuid)?;
                 let gtk_orientation = match orientation.as_str() {
                     "vertical" => gtk4::Orientation::Vertical,
                     _ => gtk4::Orientation::Horizontal,
@@ -619,10 +619,10 @@ impl SplitEngine {
         let inherited_config = local_pane_config(
             Some((inherited_surface, active_uuid)),
             ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_SPLIT,
-            new_uuid,
         );
 
         // Create new GLArea + surface for the new pane.
+        let new_ids = crate::ghostty::surface::PaneIds { workspace: self.workspace_uuid, surface: new_uuid };
         eprintln!(
             "cmux: split_active calling create_surface for new_pane_id={}",
             new_pane_id
@@ -633,6 +633,7 @@ impl SplitEngine {
             Some(inherited_config),
             new_pane_id,
             crate::ghostty::surface::SurfaceIoMode::Exec,
+            new_ids,
         );
         // Phase 9: Attach right-click context menu (D-08)
         attach_terminal_context_menu(&new_gl_area);
@@ -1002,6 +1003,10 @@ impl SplitEngine {
         }
         if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
             registry.remove(&(surface_to_free as usize));
+        }
+        // agent-status
+        if let Ok(mut map) = crate::ghostty::callbacks::SURFACE_WORKSPACE.lock() {
+            map.remove(&(surface_to_free as usize));
         }
 
         Some(surviving_id)
@@ -1937,8 +1942,9 @@ fn schedule_resize_recovery() {
 
 /// Environment variable carrying a pane's UUID into its shell (same name as
 /// cmux on macOS). Used to find a pane's shell in /proc and read its cwd.
-const SURFACE_ID_ENV: &str = "CMUX_SURFACE_ID";
-const SURFACE_ID_ENV_C: &std::ffi::CStr = c"CMUX_SURFACE_ID";
+/// create_surface exports it (with the other CMUX_* vars, see
+/// agent_status::pane_env_vars) from the pane's PaneIds.
+const SURFACE_ID_ENV: &str = crate::agent_status::ENV_SURFACE_ID;
 
 /// Leak a C string for a Ghostty surface config. The config is consumed at
 /// GLArea realize time, after the caller returns, and Ghostty copies what it
@@ -1950,7 +1956,7 @@ fn leak_c_string(s: &str) -> *const std::os::raw::c_char {
     }
 }
 
-/// Surface config for a new local terminal pane with UUID `new_uuid`.
+/// Surface config for a new local terminal pane.
 /// When `source` (the pane it is opened from, plus its UUID) is given, the new
 /// pane starts in the source's working directory: Ghostty's own value (learned
 /// from OSC 7) if it names a local directory, else the cwd of the source
@@ -1958,7 +1964,6 @@ fn leak_c_string(s: &str) -> *const std::os::raw::c_char {
 pub(crate) fn local_pane_config(
     source: Option<(ffi::ghostty_surface_t, Option<String>)>,
     context: ffi::ghostty_surface_context_e,
-    new_uuid: Uuid,
 ) -> ffi::ghostty_surface_config_s {
     let mut config = unsafe { ffi::ghostty_surface_config_new() };
     if let Some((surface, source_uuid)) = source.filter(|(s, _)| !s.is_null()) {
@@ -1983,12 +1988,6 @@ pub(crate) fn local_pane_config(
         config.working_directory = wd.as_deref().map(leak_c_string).unwrap_or(std::ptr::null());
     }
     config.context = context;
-    let env = Box::new(ffi::ghostty_env_var_s {
-        key: SURFACE_ID_ENV_C.as_ptr(),
-        value: leak_c_string(&new_uuid.to_string()),
-    });
-    config.env_vars = Box::into_raw(env);
-    config.env_var_count = 1;
     config
 }
 

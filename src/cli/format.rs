@@ -52,7 +52,7 @@ pub fn format_workspace_list(result: &Value, color: bool) -> String {
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
         let marker = if selected { "*" } else { " " };
-        let line = format!(
+        let mut line = format!(
             "{} {}: {} ({} pane{})",
             marker,
             i + 1,
@@ -60,6 +60,8 @@ pub fn format_workspace_list(result: &Value, color: bool) -> String {
             pane_count,
             if pane_count == 1 { "" } else { "s" }
         );
+        // agent-status
+        line.push_str(&format_status_suffix(ws));
         if selected && color {
             lines.push(green(&line, true));
         } else {
@@ -325,8 +327,31 @@ pub fn format_response(method: &str, result: &Value, json_mode: bool, color: boo
         // Browser list: human-readable table
         "browser.list" => format_browser_list(result, color),
 
+        // agent-status
+        "workspace.set_status" => {
+            let id = result.get("workspace_id").and_then(|v| v.as_str()).unwrap_or("");
+            let status = format_status_suffix(result);
+            if status.is_empty() {
+                format!("Cleared status of workspace {}", id)
+            } else {
+                format!("Workspace {}:{}", id, status)
+            }
+        }
+
         // Default: pretty-print JSON for uncommon commands
         _ => format_fallback(result),
+    }
+}
+
+// agent-status
+/// " [running: message]" for an object with "status"/"status_message", or "" if no status.
+fn format_status_suffix(v: &Value) -> String {
+    let Some(status) = v.get("status").and_then(|s| s.as_str()) else {
+        return String::new();
+    };
+    match v.get("status_message").and_then(|m| m.as_str()).filter(|m| !m.is_empty()) {
+        Some(msg) => format!(" [{}: {}]", status, msg),
+        None => format!(" [{}]", status),
     }
 }
 
