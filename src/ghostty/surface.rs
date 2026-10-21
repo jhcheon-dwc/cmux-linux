@@ -631,15 +631,14 @@ pub fn create_surface(
             let was_composing = im.in_keyevent.get() == ImKeyEvent::Composing;
             im.in_keyevent.set(ImKeyEvent::False);
 
-            if im_handled {
-                // Still composing (e.g. typing a Hangul syllable): nothing to encode.
-                // Was composing and now committed (e.g. Enter finishing a word):
-                // the commit already sent the text; don't also encode this key.
-                // Handled with no text (e.g. IM toggle): swallow it.
-                if im.composing.get() || was_composing || im.len.get() == 0 {
-                    im.len.set(0);
-                    return gtk4::glib::Propagation::Stop;
-                }
+            if crate::ghostty::input::im_swallows_key(
+                im_handled,
+                im.composing.get(),
+                was_composing,
+                im.len.get(),
+            ) {
+                im.len.set(0);
+                return gtk4::glib::Propagation::Stop;
             }
 
             // text field: UTF-8 from the keyval (what the key produces with modifiers applied).
