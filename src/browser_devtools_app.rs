@@ -1301,6 +1301,13 @@ fn refresh_idb(app: &Rc<AppPanel>) {
                 app.idb.table.list.remove_all();
                 reset_pager(&app.idb.pager, "");
                 update_idb_buttons(app);
+                // Nothing selected yet: open the first object store so records
+                // show without a click (its row-selected handler loads them).
+                if let Some(idx) = items.iter().position(|i| matches!(i, IdbItem::Store(..))) {
+                    if let Some(row) = app.idb.tree.row_at_index(idx as i32) {
+                        app.idb.tree.select_row(Some(&row));
+                    }
+                }
             }
         }
     });
@@ -1437,6 +1444,10 @@ fn refresh_cache(app: &Rc<AppPanel>) {
                 app.cache.table.list.remove_all();
                 reset_pager(&app.cache.pager, "");
                 app.cache.delete_cache.set_sensitive(false);
+                // Same as IndexedDB: show the first cache's entries right away.
+                if let Some(row) = app.cache.tree.row_at_index(0) {
+                    app.cache.tree.select_row(Some(&row));
+                }
             }
         }
     });

@@ -171,6 +171,7 @@ popover.menu separator { background-color: var(--color-line); }
 .browser-preview, .preview-container { background-color: var(--color-surface-sunken); }
 entry.browser-url-bar { font-size: var(--font-size-label); min-height: 26px; padding: 0 var(--space-md); margin: 0 var(--space-xs); background-color: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-line); border-radius: var(--rounded-md); box-shadow: none; }
 entry.browser-url-bar:focus-within { border-color: var(--color-focus); }
+entry.browser-url-bar selection { background-color: var(--color-line-strong); color: var(--color-text-primary); }
 .preview-empty, .preview-error { color: var(--color-text-secondary); font-size: var(--font-size-label); font-weight: 400; padding: 32px; }
 .preview-error { color: var(--color-tertiary); }
 .stream-indicator { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-secondary); margin: 0 var(--space-xs); }
