@@ -1,5 +1,8 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+; 터치패드 스크롤은 짧은 간격으로 휠 이벤트를 많이 보내서 기본 한도(2초에 70번)를 금방 넘고
+; "71 hotkeys have been received..." 경고 창이 뜸. 휠/터치패드 판별만 하고 통과시키므로 한도를 높임.
+A_MaxHotkeysPerInterval := 2000
 
 ; WSLg 창(msrdc.exe)용 입력 보정. contrib/wsl/setup.sh가 시작프로그램에 등록합니다.
 

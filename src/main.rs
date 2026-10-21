@@ -21,6 +21,8 @@ mod ssh_dialog;
 // terminal-actions
 mod find_bar;
 mod url_opener;
+#[allow(dead_code)] // hook mapping is used by the CLI (src/cli/mod.rs)
+mod agent_status; // agent-status
 
 const APP_ID: &str = "io.cmux.App";
 
@@ -101,6 +103,21 @@ popover.menu accelerator { color: #5b8dd9; font-size: 12px; }
 /* terminal-actions: find bar overlay */
 .cmux-find-bar { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; padding: 4px; }
 .cmux-find-counter { color: #888888; font-size: 12px; }
+/* agent-status: sidebar agent status badge, message and OSC 9;4 progress */
+.workspace-list row label.agent-status { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 3px; color: #1a1a1a; }
+.workspace-list row label.agent-status.status-running { background-color: #5b8dd9; color: #ffffff; }
+.workspace-list row label.agent-status.status-needs-input { background-color: #e8a444; }
+.workspace-list row label.agent-status.status-idle { background-color: #4a4a4a; color: #cccccc; }
+.workspace-list row label.agent-status.status-error { background-color: #cc4444; color: #ffffff; }
+.workspace-list row.active-workspace label.agent-status.status-running { background-color: #ffffff; color: #2f5fa8; }
+.workspace-list row label.agent-status-message { font-size: 11px; color: #999999; }
+.workspace-list row.active-workspace label.agent-status-message { color: #e8eefa; font-weight: 400; }
+progressbar.workspace-progress { margin-top: 3px; }
+progressbar.workspace-progress trough { min-height: 3px; background-color: #3a3a3a; }
+progressbar.workspace-progress progress { min-height: 3px; background-color: #5b8dd9; }
+progressbar.workspace-progress.progress-error progress { background-color: #cc4444; }
+progressbar.workspace-progress.progress-paused progress { background-color: #e8a444; }
+.workspace-list row.active-workspace progressbar.workspace-progress progress { background-color: #ffffff; }
 ";
 
 fn main() {
@@ -378,16 +395,7 @@ fn build_ui(
         }
     }
 
-    // Phase 9: Wire close buttons + context menus on all sidebar rows created above.
-    {
-        let n = sidebar_list.observe_children().n_items();
-        for i in 0..n {
-            if let Some(row) = sidebar_list.row_at_index(i as i32) {
-                crate::sidebar::wire_row_close_button(&row, state.clone(), app);
-                crate::sidebar::attach_sidebar_context_menu(&row, state.clone());
-            }
-        }
-    }
+    // Phase 9: Close buttons + context menus are wired by AppState when each row is built.
 
     // Attach command receiver to GTK main loop via glib::MainContext::default().spawn_local.
     // This replaces the old glib::MainContext::channel pattern (removed in glib 0.18+).
@@ -519,6 +527,18 @@ fn build_ui(
                         crate::app_state::notify_without_source(&n.title, &n.body);
                     }
                     None => {}
+                }
+            }
+            // agent-status: apply queued OSC 9;4 progress reports (and expire stale ones).
+            {
+                let events = crate::ghostty::callbacks::PROGRESS_QUEUE
+                    .lock()
+                    .map(|mut q| std::mem::take(&mut *q))
+                    .unwrap_or_default();
+                let needs_update = !events.is_empty()
+                    || state.borrow().workspaces.iter().any(|ws| ws.progress.is_some());
+                if needs_update {
+                    state.borrow_mut().apply_progress_reports(events);
                 }
             }
             glib::ControlFlow::Continue

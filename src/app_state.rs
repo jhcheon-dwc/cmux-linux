@@ -45,6 +45,8 @@ pub struct AppState {
     pub browser_surface_counter: u32,
     /// Maps short-ref ID -> surface UUID (lost on restart, per D-06).
     pub browser_surface_refs: std::collections::HashMap<u32, String>,
+    /// Weak self-reference, handed to sidebar row callbacks (agent-status).
+    self_weak: std::rc::Weak<RefCell<AppState>>,
 }
 
 impl AppState {
@@ -56,7 +58,7 @@ impl AppState {
         ghostty_app: ffi::ghostty_app_t,
         gtk_app: gtk4::Application,
     ) -> AppStateRef {
-        let state = AppState {
+        Rc::new_cyclic(|self_weak| RefCell::new(AppState {
             workspaces: Vec::new(),
             split_engines: Vec::new(),
             active_index: 0,
@@ -76,8 +78,8 @@ impl AppState {
             browser_manager: None,
             browser_surface_counter: 0,
             browser_surface_refs: std::collections::HashMap::new(),
-        };
-        Rc::new(RefCell::new(state))
+            self_weak: self_weak.clone(),
+        }))
     }
 
     /// Create a new workspace. Allocates an ID, creates a sidebar row, and adds a placeholder
@@ -90,17 +92,7 @@ impl AppState {
         self.next_display_number += 1;
 
         let mut workspace = Workspace::new(id, display_number);
-        let name = workspace.name.clone();
-
-        // Phase 9: Use shared row builder for consistent layout including close button
-        let hbox = crate::sidebar::rebuild_sidebar_row_content(&name);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&hbox));
-        unsafe {
-            row.set_data("workspace-id", id);
-        }
-        self.sidebar_list.append(&row);
+        self.attach_sidebar_row(&mut workspace);
 
         // Create surface and split engine
         let pane_id = id * 1000;
@@ -113,18 +105,18 @@ impl AppState {
         let config = crate::split_engine::local_pane_config(
             self.active_split_engine().and_then(|e| e.active_terminal_source()),
             crate::ghostty::ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_TAB,
-            pane_uuid,
         );
+        let ids = crate::ghostty::surface::PaneIds { workspace: workspace.uuid, surface: pane_uuid };
         let (gl_area, surface_cell) =
-            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, ids);
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
             self.ghostty_app,
             gl_area.clone(),
             surface_cell,
             pane_id,
-        )
-        .with_root_uuid(pane_uuid);
+            ids,
+        );
 
         // Add to stack
         let page_name = format!("workspace-{}", id);
@@ -154,21 +146,17 @@ impl AppState {
         let mut workspace = Workspace::new(id, display_number);
         workspace.name = ws.name.clone();
 
-        // Phase 9: Use shared row builder for consistent layout including close button
-        let hbox = crate::sidebar::rebuild_sidebar_row_content(&workspace.name);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&hbox));
-        unsafe { row.set_data("workspace-id", id); }
-        self.sidebar_list.append(&row);
-
         // Build split tree from session data (D-05)
         let engine = crate::split_engine::SplitEngine::from_data(
             self.gtk_app.clone(),
             self.ghostty_app,
             &ws.layout,
             ws.active_pane_uuid.as_deref(),
+            workspace.uuid,
         )?;
+
+        // Sidebar row only once the tree is valid, so a failed restore leaves no orphan row.
+        self.attach_sidebar_row(&mut workspace);
 
         // Add to stack
         let page_name = format!("workspace-{}", id);
@@ -181,38 +169,14 @@ impl AppState {
         Some(id)
     }
 
-    /// Build a sidebar row for a workspace. Used by create_workspace and create_remote_workspace.
-    fn build_sidebar_row(&self, workspace: &Workspace) -> gtk4::ListBoxRow {
-        let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-        let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        let label = gtk4::Label::new(Some(&workspace.name));
-        label.set_halign(gtk4::Align::Start);
-        label.set_hexpand(true);
-        vbox.append(&label);
-
-        // SSH connection state subtitle (only for remote workspaces)
-        if workspace.connection_state.is_remote() {
-            let status = gtk4::Label::new(Some(workspace.connection_state.display_text()));
-            status.set_halign(gtk4::Align::Start);
-            status.add_css_class("connection-state");
-            status.add_css_class(workspace.connection_state.css_class());
-            vbox.append(&status);
-        }
-        vbox.set_hexpand(true);
-        hbox.append(&vbox);
-
-        // Attention dot — hidden by default, shown when has_attention
-        let dot = gtk4::Label::new(None);
-        dot.add_css_class("attention-dot");
-        dot.set_visible(false);
-        hbox.append(&dot);
-
-        let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(&hbox));
-        unsafe {
-            row.set_data("workspace-id", workspace.id);
-        }
-        row
+    /// Build the sidebar row for `workspace` (shared by local, restored and SSH
+    /// workspaces), append it to the sidebar list and wire its close button and
+    /// context menu.
+    fn attach_sidebar_row(&self, workspace: &mut Workspace) {
+        let row = crate::sidebar::SidebarRow::new(workspace);
+        self.sidebar_list.append(&row.row);
+        crate::sidebar::wire_row(&row, self.self_weak.clone(), &self.gtk_app);
+        workspace.sidebar_row = Some(row);
     }
 
     /// Create a remote SSH workspace. Returns workspace id.
@@ -227,9 +191,9 @@ impl AppState {
         let display_number = self.next_display_number;
         self.next_display_number += 1;
 
-        let workspace = Workspace::new_remote(id, display_number, target);
-        let row = self.build_sidebar_row(&workspace);
-        self.sidebar_list.append(&row);
+        let mut workspace = Workspace::new_remote(id, display_number, target);
+        self.attach_sidebar_row(&mut workspace);
+        let ids = crate::ghostty::surface::PaneIds::new(workspace.uuid);
 
         // Create remote surface with manual I/O mode
         let pane_id = id * 1000;
@@ -246,6 +210,7 @@ impl AppState {
             None,
             pane_id,
             crate::ghostty::surface::SurfaceIoMode::Manual { io_write_ctx: io_ctx.clone() },
+            ids,
         );
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
@@ -253,6 +218,7 @@ impl AppState {
             gl_area,
             surface_cell,
             pane_id,
+            ids,
         );
 
         let page_name = workspace.stack_page_name.clone();
@@ -279,22 +245,8 @@ impl AppState {
     pub fn update_connection_state(&mut self, workspace_id: u64, state: ConnectionState) {
         if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == workspace_id) {
             self.workspaces[idx].connection_state = state.clone();
-            // Update sidebar subtitle
-            if let Some(row) = self.sidebar_list.row_at_index(idx as i32) {
-                if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
-                    if let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() {
-                        // Last child in vbox is the status label (if it has connection-state class)
-                        if let Some(status) = vbox.last_child().and_downcast::<gtk4::Label>() {
-                            if status.has_css_class("connection-state") {
-                                status.set_text(state.display_text());
-                                status.remove_css_class("connected");
-                                status.remove_css_class("disconnected");
-                                status.remove_css_class("reconnecting");
-                                status.add_css_class(state.css_class());
-                            }
-                        }
-                    }
-                }
+            if let Some(row) = &self.workspaces[idx].sidebar_row {
+                row.set_connection_state(&state);
             }
         }
     }
@@ -354,8 +306,8 @@ impl AppState {
         let workspace = self.workspaces.remove(index);
 
         // Remove sidebar row.
-        if let Some(row) = self.sidebar_list.row_at_index(index as i32) {
-            self.sidebar_list.remove(&row);
+        if let Some(row) = &workspace.sidebar_row {
+            self.sidebar_list.remove(&row.row);
         }
 
         // Remove GtkStack page.
@@ -370,6 +322,10 @@ impl AppState {
             }
             if let Ok(mut reg) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
                 reg.remove(&(surface as usize));
+            }
+            // agent-status
+            if let Ok(mut map) = crate::ghostty::callbacks::SURFACE_WORKSPACE.lock() {
+                map.remove(&(surface as usize));
             }
         }
 
@@ -393,36 +349,26 @@ impl AppState {
         }
         // Phase 4: clear attention when user switches to a workspace (D-05).
         self.clear_workspace_attention(index);
+        self.switch_to_index_keep_unread(index);
+    }
+
+    /// agent-status: switch like `switch_to_index` without marking the workspace read
+    /// (used when a sidebar row's context menu is opened, which is not a visit).
+    pub fn switch_to_index_keep_unread(&mut self, index: usize) {
+        if index >= self.workspaces.len() {
+            return;
+        }
         self.active_index = index;
         let page_name = self.workspaces[index].stack_page_name.clone();
         self.stack.set_visible_child_name(&page_name);
-        if let Some(row) = self.sidebar_list.row_at_index(index as i32) {
-            self.sidebar_list.select_row(Some(&row));
-            // Update CSS classes: active row gets "active-workspace" for styling.
-            // All rows: remove first, then add to active.
-            let count = self.workspaces.len() as i32;
-            for i in 0..count {
-                if let Some(r) = self.sidebar_list.row_at_index(i) {
-                    r.remove_css_class("active-workspace");
-                    // Phase 4: navigate nested layout: row > hbox > vbox > label
-                    if let Some(hbox) = r.child().and_downcast::<gtk4::Box>() {
-                        if let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() {
-                            if let Some(label) = vbox.first_child().and_downcast::<gtk4::Label>() {
-                                label.set_css_classes(&[]);
-                            }
-                        }
-                    }
-                }
+        // Update CSS classes: active row gets "active-workspace" for styling.
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            if let Some(row) = &ws.sidebar_row {
+                row.set_active(i == index);
             }
-            row.add_css_class("active-workspace");
-            // Phase 4: navigate nested layout: row > hbox > vbox > label
-            if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
-                if let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() {
-                    if let Some(label) = vbox.first_child().and_downcast::<gtk4::Label>() {
-                        label.add_css_class("active-workspace-label");
-                    }
-                }
-            }
+        }
+        if let Some(row) = &self.workspaces[index].sidebar_row {
+            self.sidebar_list.select_row(Some(&row.row));
         }
         // Grab GTK keyboard focus on the active pane so key events reach Ghostty.
         if let Some(engine) = self.split_engines.get(index) {
@@ -462,17 +408,18 @@ impl AppState {
 
     /// Rename the active workspace. Per D-03/D-10: Ctrl+Shift+R (UI wired in Plan 04/05).
     pub fn rename_active(&mut self, new_name: String) {
-        if let Some(ws) = self.workspaces.get_mut(self.active_index) {
-            ws.rename(new_name.clone());
-            // Update the sidebar label (Phase 4 nested layout: row > hbox > vbox > label).
-            if let Some(row) = self.sidebar_list.row_at_index(self.active_index as i32) {
-                if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
-                    if let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() {
-                        if let Some(label) = vbox.first_child().and_downcast::<gtk4::Label>() {
-                            label.set_text(&new_name);
-                        }
-                    }
-                }
+        if let Some(id) = self.workspaces.get(self.active_index).map(|ws| ws.id) {
+            self.rename_workspace(id, new_name);
+        }
+    }
+
+    /// Rename the workspace with internal id `workspace_id`. Only the name label
+    /// changes; status badge, progress and attention indicators are preserved.
+    pub fn rename_workspace(&mut self, workspace_id: u64, new_name: String) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.id == workspace_id) {
+            ws.rename(new_name);
+            if let Some(row) = &ws.sidebar_row {
+                row.set_name(&ws.name);
             }
             self.trigger_session_save();
         }
@@ -583,15 +530,9 @@ impl AppState {
 
     /// Update the sidebar dot visibility for workspace at `index`.
     fn update_sidebar_attention(&self, index: usize) {
-        if let Some(row) = self.sidebar_list.row_at_index(index as i32) {
-            let has_attention = self.workspaces.get(index)
-                .map(|ws| ws.has_attention)
-                .unwrap_or(false);
-            // Row layout: GtkBox(H) > [GtkBox(V) > [GtkLabel(name)], GtkLabel(dot)]
-            if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
-                if let Some(dot) = hbox.last_child() {
-                    dot.set_visible(has_attention);
-                }
+        if let Some(ws) = self.workspaces.get(index) {
+            if let Some(row) = &ws.sidebar_row {
+                row.set_attention(ws.has_attention);
             }
         }
     }
@@ -645,6 +586,88 @@ impl AppState {
                 let _ = tx.send(session);
             }
             notify.notify_one();
+        }
+    }
+
+    // agent-status
+    /// Mark the workspace at `index` read (clears attention) or unread (shows the dot).
+    pub fn set_workspace_unread(&mut self, index: usize, unread: bool) {
+        if !unread {
+            self.clear_workspace_attention(index);
+            return;
+        }
+        if let Some(ws) = self.workspaces.get_mut(index) {
+            ws.has_attention = true;
+        }
+        self.update_sidebar_attention(index);
+    }
+
+    /// Index of the workspace with UUID `workspace_id` or containing surface `surface_id`
+    /// (workspace takes precedence when both are given).
+    pub fn find_workspace_for_status(
+        &self,
+        workspace_id: Option<&str>,
+        surface_id: Option<&str>,
+    ) -> Option<usize> {
+        if let Some(wid) = workspace_id.filter(|s| !s.is_empty()) {
+            return self.workspaces.iter().position(|ws| ws.uuid.to_string() == wid);
+        }
+        let sid = surface_id.filter(|s| !s.is_empty())?;
+        self.split_engines.iter().position(|engine| {
+            engine.all_panes().iter().any(|(uuid, _, _)| uuid.to_string() == sid)
+        })
+    }
+
+    /// Set or clear the agent status of the workspace at `index` and refresh its row.
+    pub fn set_workspace_status(
+        &mut self,
+        index: usize,
+        update: crate::agent_status::StatusUpdate,
+        message: Option<&str>,
+    ) {
+        use crate::agent_status::{normalize_message, AgentStatus, StatusUpdate};
+        let Some(ws) = self.workspaces.get_mut(index) else { return };
+        ws.agent_status = match update {
+            StatusUpdate::Set(state) => Some(AgentStatus { state, message: normalize_message(message) }),
+            StatusUpdate::Clear => None,
+        };
+        if let Some(row) = &ws.sidebar_row {
+            row.set_agent_status(ws.agent_status.as_ref());
+        }
+    }
+
+    /// Apply queued OSC 9;4 progress reports (from callbacks::PROGRESS_QUEUE) to the
+    /// rows of the workspaces owning the reporting surfaces, and drop reports that
+    /// have not been refreshed for a while (a program may exit without removing it).
+    pub fn apply_progress_reports(&mut self, events: Vec<crate::ghostty::callbacks::ProgressEvent>) {
+        use crate::agent_status::ProgressState;
+        const STALE: std::time::Duration = std::time::Duration::from_secs(15);
+        let now = std::time::Instant::now();
+        for ev in events {
+            let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.uuid == ev.workspace) else {
+                continue;
+            };
+            // Each pane keeps its own report, so one pane's Remove does not hide another's bar.
+            ws.progress_reports.retain(|r| r.0 != ev.surface);
+            if ev.state != ProgressState::Remove {
+                ws.progress_reports.push((ev.surface, ev.state, ev.progress, now));
+            }
+        }
+        for ws in self.workspaces.iter_mut() {
+            ws.progress_reports.retain(|r| now.duration_since(r.3) < STALE);
+            // Show the most recently updated report (pushed last).
+            let shown = ws.progress_reports.last().map(|r| (r.1, r.2));
+            if shown != ws.progress {
+                ws.progress = shown;
+                if let Some(row) = &ws.sidebar_row {
+                    row.set_progress(shown);
+                }
+            } else if matches!(shown, Some((ProgressState::Indeterminate, _))) {
+                // Animate indeterminate bars on each timer tick.
+                if let Some(row) = &ws.sidebar_row {
+                    row.progress.pulse();
+                }
+            }
         }
     }
 }

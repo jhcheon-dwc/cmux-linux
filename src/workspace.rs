@@ -61,6 +61,15 @@ pub struct Workspace {
     pub remote_target: Option<String>,
     /// Connection state for remote workspaces.
     pub connection_state: ConnectionState,
+    /// Agent status reported via `workspace.set_status` / `cmux claude-hook` (None = no badge).
+    pub agent_status: Option<crate::agent_status::AgentStatus>,
+    /// Displayed OSC 9;4 progress: the most recently updated pane report (None = no bar).
+    pub progress: Option<(crate::agent_status::ProgressState, i8)>,
+    /// Active OSC 9;4 reports per pane surface (ptr as usize, state, value, last update).
+    /// Stale reports are dropped (see AppState::apply_progress_reports).
+    pub progress_reports: Vec<(usize, crate::agent_status::ProgressState, i8, std::time::Instant)>,
+    /// Sidebar row widgets. None only before the row is built (and in unit tests).
+    pub sidebar_row: Option<crate::sidebar::SidebarRow>,
 }
 
 impl Workspace {
@@ -78,6 +87,10 @@ impl Workspace {
             last_notification: None,
             remote_target: None,
             connection_state: ConnectionState::Local,
+            agent_status: None,
+            progress: None,
+            progress_reports: Vec::new(),
+            sidebar_row: None,
         }
     }
 
@@ -100,6 +113,10 @@ impl Workspace {
             last_notification: None,
             remote_target: Some(target),
             connection_state: ConnectionState::Reconnecting(0),
+            agent_status: None,
+            progress: None,
+            progress_reports: Vec::new(),
+            sidebar_row: None,
         }
     }
 }

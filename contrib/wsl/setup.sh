@@ -10,17 +10,20 @@
 #   6. Windows: 알림을 클릭하면 해당 워크스페이스로 이동 (cmux-focus: URI 등록)
 #
 # 여러 번 실행해도 됩니다. 이미 있는 Ghostty/GTK 설정 파일은 덮어쓰지 않습니다.
+# --claude-hooks: ~/.claude/settings.json에 cmux 상태 훅을 추가 (백업 후, 중복 추가 안 함)
 #
-# 사용법: contrib/wsl/setup.sh [--skip-build] [--no-windows]
+# 사용법: contrib/wsl/setup.sh [--skip-build] [--no-windows] [--claude-hooks]
 set -euo pipefail
 
 SKIP_BUILD=0
 WINDOWS=1
+CLAUDE_HOOKS=0 # agent-status
 for arg in "$@"; do
     case "$arg" in
         --skip-build) SKIP_BUILD=1 ;;
         --no-windows) WINDOWS=0 ;;
-        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --claude-hooks) CLAUDE_HOOKS=1 ;; # agent-status
+        -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "알 수 없는 옵션: $arg" >&2; exit 1 ;;
     esac
 done
@@ -146,6 +149,14 @@ if [ "$WINDOWS" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
         -Register "${DISTRO_ARGS[@]}" -Cmux "$CMUX_CLI" \
         || warn "cmux-focus 등록 실패. 알림 클릭으로 워크스페이스 이동이 안 됩니다."
     echo "  HKCU\\Software\\Classes\\cmux-focus → $WIN_LOCAL_W\\cmux\\cmux-focus.ps1"
+fi
+
+# ── agent-status: Claude Code 훅 (--claude-hooks 를 줬을 때만) ────────────────
+if [ "$CLAUDE_HOOKS" -eq 1 ]; then
+    step "Claude Code 훅 등록 (~/.claude/settings.json, 기존 파일은 백업)"
+    python3 -I "$REPO/contrib/claude/merge_hooks.py" \
+        "$REPO/contrib/claude/hooks.json" "$HOME/.claude/settings.json" \
+        || warn "Claude Code 훅 등록 실패. ~/.claude/settings.json 은 바뀌지 않았습니다."
 fi
 
 # ── 마무리 ──────────────────────────────────────────────────────────────────

@@ -111,6 +111,52 @@ pub enum SurfaceIoMode {
     },
 }
 
+/// agent-status: identity of a pane, exported to its shell as CMUX_WORKSPACE_ID /
+/// CMUX_SURFACE_ID. `surface` is the Leaf's stable uuid in the split tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaneIds {
+    pub workspace: uuid::Uuid,
+    pub surface: uuid::Uuid,
+}
+
+impl PaneIds {
+    /// Ids for a new pane (fresh surface uuid) in `workspace`.
+    pub fn new(workspace: uuid::Uuid) -> Self {
+        PaneIds { workspace, surface: uuid::Uuid::new_v4() }
+    }
+}
+
+/// agent-status: owned C strings backing `ghostty_surface_config_s.env_vars`.
+/// Ghostty copies the strings in ghostty_surface_new, so this only has to outlive that call.
+pub struct EnvVarBlock {
+    _strings: Vec<std::ffi::CString>,
+    vars: Vec<ffi::ghostty_env_var_s>,
+}
+
+impl EnvVarBlock {
+    /// Build from key/value pairs; pairs containing an interior NUL are skipped.
+    pub fn new(pairs: &[(String, String)]) -> Self {
+        let mut strings = Vec::with_capacity(pairs.len() * 2);
+        let mut vars = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+            let (Ok(k), Ok(v)) = (std::ffi::CString::new(k.as_str()), std::ffi::CString::new(v.as_str())) else {
+                continue;
+            };
+            // The CString heap buffers do not move when the CStrings move into `strings`.
+            vars.push(ffi::ghostty_env_var_s { key: k.as_ptr(), value: v.as_ptr() });
+            strings.push(k);
+            strings.push(v);
+        }
+        EnvVarBlock { _strings: strings, vars }
+    }
+
+    /// Point `config.env_vars` at this block (valid while `self` is alive).
+    pub fn apply(&mut self, config: &mut ffi::ghostty_surface_config_s) {
+        config.env_vars = if self.vars.is_empty() { std::ptr::null_mut() } else { self.vars.as_mut_ptr() };
+        config.env_var_count = self.vars.len();
+    }
+}
+
 /// Call glGetError() via FFI to check for GL errors after ghostty calls.
 /// Returns 0 if no error, or the GL error code otherwise.
 fn gl_get_error() -> u32 {
@@ -135,6 +181,7 @@ pub fn create_surface(
     inherited_config: Option<ffi::ghostty_surface_config_s>,
     pane_id: u64,
     io_mode: SurfaceIoMode,
+    ids: PaneIds,
 ) -> (gtk4::GLArea, Rc<RefCell<Option<ffi::ghostty_surface_t>>>) {
     use gtk4::prelude::*;
     use std::sync::atomic::Ordering;
@@ -287,8 +334,18 @@ pub fn create_surface(
                     surface_config.io_write_userdata = ctx_raw;
                 }
 
+                // agent-status: export CMUX_WORKSPACE_ID / CMUX_SURFACE_ID / CMUX_SOCKET_PATH
+                // into the pane's shell. env_block must outlive ghostty_surface_new.
+                let mut env_block = EnvVarBlock::new(&crate::agent_status::pane_env_vars(
+                    &ids.workspace.to_string(),
+                    &ids.surface.to_string(),
+                    &crate::socket::socket_path().to_string_lossy(),
+                ));
+                env_block.apply(&mut surface_config);
+
                 eprintln!("cmux: calling ghostty_surface_new");
                 let s = ffi::ghostty_surface_new(ghostty_app, &surface_config);
+                drop(env_block);
                 if s.is_null() {
                     eprintln!("cmux: FATAL — ghostty_surface_new returned null");
                     std::process::exit(1);
@@ -312,6 +369,10 @@ pub fn create_surface(
             // or become the find bar's target.
             crate::header_bar::forget_surface(surface as usize);
             crate::find_bar::forget_surface(surface as usize);
+            // agent-status: route this surface's progress reports to its workspace.
+            if let Ok(mut map) = callbacks::SURFACE_WORKSPACE.lock() {
+                map.insert(surface as usize, ids.workspace);
+            }
 
             // Set initial size and scale after surface creation.
             let scale = area.scale_factor() as f64;
@@ -1022,4 +1083,55 @@ pub(crate) unsafe extern "C" fn write_clipboard_cb(
         display.clipboard()
     };
     clipboard.set_text(&text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_vars(config: &ffi::ghostty_surface_config_s) -> Vec<(String, String)> {
+        if config.env_var_count == 0 {
+            return Vec::new();
+        }
+        let vars = unsafe { std::slice::from_raw_parts(config.env_vars, config.env_var_count) };
+        vars.iter()
+            .map(|v| unsafe {
+                (
+                    std::ffi::CStr::from_ptr(v.key).to_string_lossy().into_owned(),
+                    std::ffi::CStr::from_ptr(v.value).to_string_lossy().into_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn env_var_block_sets_surface_config() {
+        let ids = PaneIds::new(uuid::Uuid::new_v4());
+        let pairs = crate::agent_status::pane_env_vars(
+            &ids.workspace.to_string(),
+            &ids.surface.to_string(),
+            "/run/user/1000/cmux/cmux.sock",
+        );
+        let mut block = EnvVarBlock::new(&pairs);
+        let mut config: ffi::ghostty_surface_config_s = unsafe { std::mem::zeroed() };
+        block.apply(&mut config);
+        assert_eq!(read_vars(&config), pairs);
+    }
+
+    #[test]
+    fn env_var_block_skips_nul_and_handles_empty() {
+        let pairs = vec![
+            ("BAD\0KEY".to_string(), "x".to_string()),
+            ("CMUX_MSG".to_string(), "한글 값".to_string()),
+        ];
+        let mut block = EnvVarBlock::new(&pairs);
+        let mut config: ffi::ghostty_surface_config_s = unsafe { std::mem::zeroed() };
+        block.apply(&mut config);
+        assert_eq!(read_vars(&config), vec![("CMUX_MSG".to_string(), "한글 값".to_string())]);
+
+        let mut empty = EnvVarBlock::new(&[]);
+        empty.apply(&mut config);
+        assert!(config.env_vars.is_null());
+        assert_eq!(config.env_var_count, 0);
+    }
 }

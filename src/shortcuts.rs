@@ -179,11 +179,9 @@ pub fn install_shortcuts(
 }
 
 /// Create a new workspace with an initial GLArea pane and add it to AppState + GtkStack.
-pub fn handle_new_workspace(state: &Rc<RefCell<AppState>>, app: &gtk4::Application) {
+pub fn handle_new_workspace(state: &Rc<RefCell<AppState>>, _app: &gtk4::Application) {
+    // The sidebar row's close button + context menu are wired by AppState.
     state.borrow_mut().create_workspace();
-    // Wire close button + context menu on the newly created sidebar row
-    let sidebar_list = state.borrow().sidebar_list.clone();
-    crate::sidebar::wire_latest_row(&sidebar_list, state.clone(), app);
 }
 
 /// Show close-workspace confirmation dialog. If confirmed, closes the active workspace.
