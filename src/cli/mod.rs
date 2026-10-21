@@ -547,6 +547,32 @@ pub enum BrowserCommand {
     /// Disable browser streaming
     #[command(name = "stream-disable")]
     StreamDisable,
+    // app-storage
+    /// List the page's localStorage (or sessionStorage), or remove one key
+    Storage {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Use sessionStorage instead of localStorage
+        #[arg(long)]
+        session: bool,
+        /// Remove this key instead of listing
+        #[arg(long, value_name = "KEY")]
+        remove: Option<String>,
+    },
+    /// List the page's cookies, or delete one by name
+    Cookies {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Delete the cookie with this name instead of listing
+        #[arg(long, value_name = "NAME")]
+        delete: Option<String>,
+        /// Cookie domain to match when deleting (default: current URL)
+        #[arg(long, requires = "delete")]
+        domain: Option<String>,
+        /// Cookie path to match when deleting
+        #[arg(long, requires = "delete")]
+        path: Option<String>,
+    },
 }
 
 /// Run the CLI with the parsed arguments.
@@ -739,6 +765,30 @@ fn browser_command_to_rpc(cmd: &BrowserCommand) -> (&'static str, serde_json::Va
         }
         BrowserCommand::StreamEnable => ("browser.stream.enable", json!({})),
         BrowserCommand::StreamDisable => ("browser.stream.disable", json!({})),
+        // app-storage
+        BrowserCommand::Storage { surface, session, remove } => {
+            let ty = if *session { "session" } else { "local" };
+            match remove {
+                Some(key) => (
+                    "browser.storage_remove",
+                    json!({"surface_ref": surface, "type": ty, "key": key}),
+                ),
+                None => ("browser.storage_get", json!({"surface_ref": surface, "type": ty})),
+            }
+        }
+        BrowserCommand::Cookies { surface, delete, domain, path } => match delete {
+            Some(name) => {
+                let mut p = json!({"surface_ref": surface, "name": name});
+                if let Some(d) = domain {
+                    p["domain"] = json!(d);
+                }
+                if let Some(pa) = path {
+                    p["path"] = json!(pa);
+                }
+                ("browser.cookies_delete", p)
+            }
+            None => ("browser.cookies_get", json!({"surface_ref": surface})),
+        },
     }
 }
 
@@ -1103,6 +1153,39 @@ mod tests {
         argv.extend_from_slice(args);
         let cli = Cli::try_parse_from(argv).expect("parse");
         command_to_rpc(&cli.command)
+    }
+
+    // app-storage
+    #[test]
+    fn storage_and_cookies_map_to_daemon_actions() {
+        assert_eq!(
+            rpc(&["browser", "storage"]),
+            ("browser.storage_get", json!({"surface_ref": null, "type": "local"}))
+        );
+        assert_eq!(
+            rpc(&["browser", "storage", "surface:1", "--session", "--remove", "한글 키"]),
+            (
+                "browser.storage_remove",
+                json!({"surface_ref": "surface:1", "type": "session", "key": "한글 키"})
+            )
+        );
+        assert_eq!(
+            rpc(&["browser", "cookies"]),
+            ("browser.cookies_get", json!({"surface_ref": null}))
+        );
+        assert_eq!(
+            rpc(&["browser", "cookies", "--delete", "sid"]),
+            ("browser.cookies_delete", json!({"surface_ref": null, "name": "sid"}))
+        );
+        assert_eq!(
+            rpc(&["browser", "cookies", "--delete", "sid", "--domain", ".h", "--path", "/"]),
+            (
+                "browser.cookies_delete",
+                json!({"surface_ref": null, "name": "sid", "domain": ".h", "path": "/"})
+            )
+        );
+        let argv = ["cmux", "browser", "cookies", "--domain", ".h"];
+        assert!(Cli::try_parse_from(argv).is_err());
     }
 
     #[test]
