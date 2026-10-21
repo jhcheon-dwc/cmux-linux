@@ -11,19 +11,22 @@
 #
 # 여러 번 실행해도 됩니다. 이미 있는 Ghostty/GTK 설정 파일은 덮어쓰지 않습니다.
 # --claude-hooks: ~/.claude/settings.json에 cmux 상태 훅을 추가 (백업 후, 중복 추가 안 함)
+# --browser: 브라우저 미리보기(Ctrl+Shift+B)용 Chrome과 필요한 시스템 패키지 설치
 #
-# 사용법: contrib/wsl/setup.sh [--skip-build] [--no-windows] [--claude-hooks]
+# 사용법: contrib/wsl/setup.sh [--skip-build] [--no-windows] [--claude-hooks] [--browser]
 set -euo pipefail
 
 SKIP_BUILD=0
 WINDOWS=1
 CLAUDE_HOOKS=0 # agent-status
+BROWSER=0
 for arg in "$@"; do
     case "$arg" in
         --skip-build) SKIP_BUILD=1 ;;
         --no-windows) WINDOWS=0 ;;
         --claude-hooks) CLAUDE_HOOKS=1 ;; # agent-status
-        -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --browser) BROWSER=1 ;;
+        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "알 수 없는 옵션: $arg" >&2; exit 1 ;;
     esac
 done
@@ -37,15 +40,49 @@ warn() { printf '\033[1;33m경고: %s\033[0m\n' "$*" >&2; }
 
 if ! grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     warn "WSL이 아닌 것 같습니다. WSLg 전용 설정(d3d12, Windows 토스트, AutoHotkey)은 의미가 없을 수 있습니다."
+elif [ ! -d /mnt/wslg ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    warn "WSLg(리눅스 GUI 앱 지원)가 꺼져 있는 것 같습니다. Windows에서 'wsl --update' 후 'wsl --shutdown'으로 다시 시작하세요."
 fi
 
 # ── 1. 패키지 ────────────────────────────────────────────────────────────────
 step "패키지 설치"
 sudo apt-get update
 sudo apt-get install -y \
-    git cargo rustc pkg-config libgtk-4-dev libclang-dev golang-go \
+    git curl xz-utils unzip python3 build-essential \
+    cargo rustc pkg-config libgtk-4-dev libclang-dev libonig-dev golang-go \
     ibus ibus-hangul ibus-gtk4 dbus-x11 x11-xkb-utils wl-clipboard language-pack-ko \
     fonts-noto-cjk fonts-nanum fonts-noto-core fonts-noto-color-emoji
+
+# 의존 크레이트가 Rust 1.88 이상을 요구합니다. 배포판 rustc가 더 오래됐으면
+# (Ubuntu 24.04는 1.75) rustup으로 ~/.cargo에 최신 안정 버전을 설치합니다.
+RUST_MIN=1.88
+rust_ok() {
+    local v
+    v=$(rustc --version 2>/dev/null | awk '{print $2}')
+    [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$RUST_MIN" "$v" | sort -V | head -1)" = "$RUST_MIN" ]
+}
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+if ! rust_ok; then
+    step "Rust $RUST_MIN 이상 설치 (rustup, ~/.cargo)"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    . "$HOME/.cargo/env"
+fi
+rustc --version
+
+# 기본 Ghostty 설정의 글꼴(D2Coding). 오래된 fonts-nanum에는 들어 있지 않아 직접 받습니다.
+if ! fc-list | grep -qi 'D2Coding ligature'; then
+    step "D2Coding 글꼴 설치 (~/.local/share/fonts)"
+    D2_TMP=$(mktemp -d)
+    if curl -fsSL -o "$D2_TMP/d2.zip" \
+        https://github.com/naver/d2codingfont/releases/download/VER1.3.2/D2Coding-Ver1.3.2-20180524.zip; then
+        unzip -q -o "$D2_TMP/d2.zip" 'D2CodingLigature/*.ttf' -d "$D2_TMP"
+        install -Dm644 -t "$HOME/.local/share/fonts/D2Coding" "$D2_TMP"/D2CodingLigature/*.ttf
+        fc-cache -f "$HOME/.local/share/fonts" >/dev/null
+    else
+        warn "D2Coding 다운로드 실패. 다른 고정폭 글꼴로 표시됩니다."
+    fi
+    rm -rf "$D2_TMP"
+fi
 
 # ── 2. 빌드 + 설치 ───────────────────────────────────────────────────────────
 if [ "$SKIP_BUILD" -eq 0 ]; then
@@ -157,6 +194,13 @@ if [ "$CLAUDE_HOOKS" -eq 1 ]; then
     python3 -I "$REPO/contrib/claude/merge_hooks.py" \
         "$REPO/contrib/claude/hooks.json" "$HOME/.claude/settings.json" \
         || warn "Claude Code 훅 등록 실패. ~/.claude/settings.json 은 바뀌지 않았습니다."
+fi
+
+# ── 브라우저 미리보기용 Chrome (--browser 를 줬을 때만) ──────────────────────
+if [ "$BROWSER" -eq 1 ]; then
+    step "브라우저 미리보기용 Chrome 설치 (Chrome for Testing, ~/.agent-browser)"
+    /usr/lib/cmux/agent-browser install --with-deps \
+        || warn "Chrome 설치 실패. 브라우저 미리보기에 'No browser preview'만 보입니다."
 fi
 
 # ── 마무리 ──────────────────────────────────────────────────────────────────
