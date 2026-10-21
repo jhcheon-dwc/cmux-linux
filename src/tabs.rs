@@ -414,6 +414,7 @@ impl PaneTabsUi {
 fn build_tab_item(view: &TabView) -> gtk4::Box {
     let item = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
     item.add_css_class("cmux-tab");
+    item.set_hexpand(false);
     if view.active {
         item.add_css_class("active");
     }
@@ -428,7 +429,9 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     let label = gtk4::Label::new(Some(&view.title));
     label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     label.set_max_width_chars(24);
-    label.set_hexpand(false);
+    // The title fills the tab so the close button sits at its right edge; the
+    // tab itself must not then grow across the bar (hexpand propagates up).
+    label.set_hexpand(true);
     label.set_xalign(0.0);
     item.append(&label);
 
