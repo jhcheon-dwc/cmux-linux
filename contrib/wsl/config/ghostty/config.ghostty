@@ -4,4 +4,4 @@ window-padding-x = 6
 window-padding-y = 4
 # 스크롤 속도: WSLg는 휠과 터치패드를 모두 정밀 스크롤로 보내므로 precision 값 하나가 둘 다 정함.
 # 1(기본)은 휠이 느리고 2는 터치패드가 너무 빨라서 중간값 사용.
-mouse-scroll-multiplier = precision:1.7
+mouse-scroll-multiplier = precision:3
