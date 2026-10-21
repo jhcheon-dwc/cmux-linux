@@ -4,7 +4,8 @@
 	branch = cmux-fork-gtk4-platform
 [submodule "agent-browser"]
 	path = agent-browser
-	url = https://github.com/vercel-labs/agent-browser.git
+	url = https://github.com/jhcheon-dwc/agent-browser.git
+	branch = cmux-linux
 [submodule "homebrew-cmux"]
 	path = homebrew-cmux
 	url = https://github.com/manaflow-ai/homebrew-cmux.git
