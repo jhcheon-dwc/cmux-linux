@@ -7,6 +7,7 @@
 #   3. 사용자 설정: 실행 래퍼, notify-send(Windows 토스트), 한글 입력 셸 설정, 다크 테마, Ghostty 설정
 #   4. 시작 메뉴 항목이 래퍼를 쓰도록 수정
 #   5. Windows 쪽: AutoHotkey로 한/영키 → Shift+Space (WSLg 창에서만)
+#   6. Windows: 알림을 클릭하면 해당 워크스페이스로 이동 (cmux-focus: URI 등록)
 #
 # 여러 번 실행해도 됩니다. 이미 있는 Ghostty/GTK 설정 파일은 덮어쓰지 않습니다.
 #
@@ -120,6 +121,25 @@ if [ "$WINDOWS" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
         if (Test-Path '$AHK_EXE_W') { Start-Process '$AHK_EXE_W' -ArgumentList '\"$AHK_SCRIPT_W\"' }
     " >/dev/null
     echo "  시작프로그램 등록: hangul-wslg.lnk"
+fi
+
+# ── 6. Windows: 알림 클릭 → 워크스페이스 이동 (notifications) ────────────────
+# notify-send 셰임이 만드는 토스트는 클릭하면 cmux-focus:<워크스페이스 UUID>를 엽니다.
+# 그 URI를 처리할 cmux-focus.ps1을 HKCU\Software\Classes\cmux-focus에 등록합니다.
+if [ "$WINDOWS" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
+    step "Windows: 알림 클릭 처리기(cmux-focus:) 등록"
+    # 5단계에서 이미 구했으면 재사용
+    WIN_LOCAL_W=${WIN_LOCAL_W:-$(powershell.exe -NoProfile -Command '$env:LOCALAPPDATA' | tr -d '\r')}
+    FOCUS_DIR="$(wslpath "$WIN_LOCAL_W")/cmux"
+    mkdir -p "$FOCUS_DIR"
+    cp "$HERE/windows/cmux-focus.ps1" "$FOCUS_DIR/cmux-focus.ps1"
+    CMUX_CLI=$(command -v cmux 2>/dev/null || echo /usr/bin/cmux)
+    DISTRO_ARGS=()  # 빈 인자는 WSL에서 Windows로 넘어가며 사라질 수 있어 따로 둠
+    [ -n "${WSL_DISTRO_NAME:-}" ] && DISTRO_ARGS=(-Distro "$WSL_DISTRO_NAME")
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$WIN_LOCAL_W\\cmux\\cmux-focus.ps1" \
+        -Register "${DISTRO_ARGS[@]}" -Cmux "$CMUX_CLI" \
+        || warn "cmux-focus 등록 실패. 알림 클릭으로 워크스페이스 이동이 안 됩니다."
+    echo "  HKCU\\Software\\Classes\\cmux-focus → $WIN_LOCAL_W\\cmux\\cmux-focus.ps1"
 fi
 
 # ── 마무리 ──────────────────────────────────────────────────────────────────

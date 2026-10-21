@@ -70,6 +70,8 @@ pub fn handle_socket_command(
                 "pane.list", "pane.focus", "pane.last",
                 "window.list", "window.current",
                 "notification.list", "notification.clear",
+                // notifications
+                "notification.create",
                 // Browser lifecycle + streaming
                 "browser.open", "browser.close", "browser.list",
                 "browser.stream.enable", "browser.stream.disable",
@@ -830,6 +832,51 @@ pub fn handle_socket_command(
         // -- Tier-2 stubs (D-10) --
         SocketCommand::NotImplemented { req_id, method, resp_tx } => {
             let _ = resp_tx.send(err(req_id, "not_implemented", &format!("{method} is not implemented")));
+        }
+
+        // notifications
+        SocketCommand::NotificationCreate { req_id, title, body, surface, workspace, resp_tx } => {
+            // SOCK-05: No focus side effects. Goes through the same path as OSC 9/777
+            // notifications (attention + focus suppression + toast + hook).
+            // Main thread: notify() mutates AppState and the sidebar (GTK widgets).
+            // Source: the surface (if it is in the given workspace, when one is given),
+            // else the workspace, else the active workspace. Without a surface the source
+            // pane is unknown, so focus suppression does not apply.
+            let target = {
+                let s = state.borrow();
+                let n = s.split_engines.len().min(s.workspaces.len());
+                let ws_idx = workspace.as_ref()
+                    .map(|w| s.workspaces.iter().position(|ws| ws.uuid.to_string() == *w));
+                let by_surface = surface.as_ref().and_then(|sf| {
+                    (0..n)
+                        .filter(|&i| ws_idx.is_none_or(|w| w == Some(i)))
+                        .find_map(|i| s.split_engines[i].root.find_pane_id_by_uuid(sf).map(|p| (i, Some(p))))
+                });
+                match (by_surface, ws_idx) {
+                    (Some(t), _) => Ok(t),
+                    (None, Some(Some(i))) => Ok((i, None)),
+                    (None, Some(None)) => Err("workspace not found"),
+                    (None, None) if surface.is_some() => Err("surface not found"),
+                    (None, None) => Ok((s.active_index, None)),
+                }
+            };
+            match target {
+                Ok((ws_idx, pane_id)) => {
+                    let delivered = state.borrow_mut().notify(
+                        ws_idx, pane_id, crate::app_state::NotificationKind::Cli, &title, &body,
+                    );
+                    let ws_uuid = state.borrow().workspaces.get(ws_idx)
+                        .map(|ws| ws.uuid.to_string())
+                        .unwrap_or_default();
+                    let _ = resp_tx.send(ok(req_id, json!({
+                        "delivered": delivered,
+                        "workspace_uuid": ws_uuid,
+                    })));
+                }
+                Err(msg) => {
+                    let _ = resp_tx.send(err(req_id, "not_found", msg));
+                }
+            }
         }
     }
 }

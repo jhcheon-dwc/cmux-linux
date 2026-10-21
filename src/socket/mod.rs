@@ -287,6 +287,16 @@ async fn dispatch_line(
             }
         }
 
+        // notifications
+        "notification.create" => commands::SocketCommand::NotificationCreate {
+            req_id: req_id.clone(),
+            title: params.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            body: params.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            surface: params.get("surface").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
+            workspace: params.get("workspace").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
+            resp_tx,
+        },
+
         _ => commands::SocketCommand::NotImplemented {
             req_id: req_id.clone(),
             method: method.clone(),

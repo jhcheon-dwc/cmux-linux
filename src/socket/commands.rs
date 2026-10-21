@@ -64,4 +64,8 @@ pub enum SocketCommand {
 
     // -- Tier-2 stub (not_implemented) --
     NotImplemented   { req_id: Value, method: String, resp_tx: RespTx },
+
+    // notifications
+    /// `surface` / `workspace` are UUID strings; both None means the focused pane.
+    NotificationCreate { req_id: Value, title: String, body: String, surface: Option<String>, workspace: Option<String>, resp_tx: RespTx },
 }

@@ -191,6 +191,22 @@ pub enum Commands {
     #[command(subcommand)]
     Browser(BrowserCommand),
 
+    // notifications
+    /// Send a notification (sidebar attention + desktop notification + hook)
+    Notify {
+        /// Notification title
+        #[arg(long, default_value = "")]
+        title: String,
+        /// Notification body
+        #[arg(long, default_value = "")]
+        body: String,
+        /// Source surface UUID (default: $CMUX_SURFACE_ID, else the focused pane)
+        #[arg(long, env = "CMUX_SURFACE_ID")]
+        surface: Option<String>,
+        /// Source workspace UUID (default: $CMUX_WORKSPACE_ID, else the focused workspace)
+        #[arg(long, env = "CMUX_WORKSPACE_ID")]
+        workspace: Option<String>,
+    },
 }
 
 /// Browser subcommands for `cmux browser <action>` / `cmux browser <surface> <action>`.
@@ -652,5 +668,19 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
         }
 
         Commands::Browser(cmd) => browser_command_to_rpc(cmd),
+
+        // notifications
+        Commands::Notify { title, body, surface, workspace } => {
+            let mut p = serde_json::Map::new();
+            p.insert("title".into(), json!(title));
+            p.insert("body".into(), json!(body));
+            if let Some(ref s) = surface {
+                p.insert("surface".into(), json!(s));
+            }
+            if let Some(ref w) = workspace {
+                p.insert("workspace".into(), json!(w));
+            }
+            ("notification.create", Value::Object(p))
+        }
     }
 }

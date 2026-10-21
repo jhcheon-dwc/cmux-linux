@@ -10,6 +10,9 @@ pub struct Config {
     pub shortcuts: ShortcutConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    // notifications
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
 }
 
 /// Per-action shortcut overrides. Each value is a GTK accelerator string (e.g. "<Ctrl>n").
@@ -246,6 +249,42 @@ impl ShortcutMap {
     }
 }
 
+// notifications
+/// Notification configuration -- [notifications] in config.toml.
+#[derive(serde::Deserialize, Debug, Clone)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// Show desktop notifications (toasts). Sidebar attention dots are unaffected.
+    pub enabled: bool,
+    /// Skip the toast (and sidebar dot) for OSC 9/777 and `cmux notify` notifications
+    /// whose source pane is the focused pane while the cmux window is active.
+    pub suppress_when_focused: bool,
+    /// Show a toast for terminal bells while the cmux window is unfocused.
+    pub bell: bool,
+    /// Shell command run via `sh -c` (detached) for every delivered notification, with
+    /// CMUX_NOTIFICATION_{TITLE,BODY,KIND}, CMUX_WORKSPACE_{ID,NAME}, CMUX_SURFACE_ID set.
+    pub command: Option<String>,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self { enabled: true, suppress_when_focused: true, bell: true, command: None }
+    }
+}
+
+/// Notification config, set once at startup from the loaded Config.
+static NOTIFICATIONS_CONFIG: std::sync::OnceLock<NotificationsConfig> = std::sync::OnceLock::new();
+
+pub fn set_notifications_config(config: NotificationsConfig) {
+    let _ = NOTIFICATIONS_CONFIG.set(config);
+}
+
+/// Current notification config (defaults if never set). Read at startup only:
+/// changes to [notifications] need a restart, like the rest of config.toml.
+pub fn notifications_config() -> &'static NotificationsConfig {
+    NOTIFICATIONS_CONFIG.get_or_init(NotificationsConfig::default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +404,24 @@ buttons_right = ["split_right", "toggle_sidebar"]
         assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::t), Some(ShortcutAction::NewWorkspace));
         // Ctrl+N should no longer map to NewWorkspace
         assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::n), None);
+    }
+
+    // notifications
+    #[test]
+    fn test_notifications_config() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.notifications.enabled);
+        assert!(config.notifications.suppress_when_focused);
+        assert!(config.notifications.bell);
+        assert!(config.notifications.command.is_none());
+
+        let config: Config = toml::from_str(r#"
+[notifications]
+suppress_when_focused = false
+command = "echo hi"
+"#).unwrap();
+        assert!(config.notifications.enabled);
+        assert!(!config.notifications.suppress_when_focused);
+        assert_eq!(config.notifications.command.as_deref(), Some("echo hi"));
     }
 }

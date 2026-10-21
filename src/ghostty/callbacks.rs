@@ -34,15 +34,37 @@ pub static GL_AREA_REGISTRY: Mutex<Vec<GtkGLAreaPtr>> = Mutex::new(Vec::new());
 pub static SURFACE_REGISTRY: LazyLock<Mutex<HashMap<usize, u64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Phase 4: Pane ID that most recently received a bell. Read by wakeup_cb to update attention state.
-pub static BELL_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// GLArea pointer (as usize) of the terminal the user last clicked, or 0. Set by the
 /// click handler in surface.rs; the main-loop timer in main.rs makes it the active pane.
 pub static CLICK_FOCUS_GL_AREA: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-/// Phase 4: Flag indicating a bell is pending processing.
-pub static BELL_PENDING: AtomicBool = AtomicBool::new(false);
+/// Bells and OSC 9/777 notifications waiting for the main-loop timer in main.rs, which
+/// resolves each source surface to its workspace/pane and hands it to AppState::notify.
+/// action_cb only queues: it runs inside ghostty_app_tick, where AppState may be borrowed.
+pub static PENDING_NOTIFICATIONS: Mutex<Vec<PendingNotification>> = Mutex::new(Vec::new());
+
+pub struct PendingNotification {
+    /// ghostty_surface_t (as usize) that raised the notification.
+    pub surface: usize,
+    pub kind: crate::app_state::NotificationKind,
+    pub title: String,
+    pub body: String,
+}
+
+fn queue_notification(target: crate::ghostty::ffi::ghostty_target_s, n: PendingNotification) {
+    if target.tag != crate::ghostty::ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+        return;
+    }
+    let surface = unsafe { target.target.surface } as usize;
+    if let Ok(mut q) = PENDING_NOTIFICATIONS.lock() {
+        // Coalesce bell storms: one pending bell per surface per timer tick.
+        let bell = crate::app_state::NotificationKind::Bell;
+        if n.kind == bell && q.iter().any(|p| p.kind == bell && p.surface == surface) {
+            return;
+        }
+        q.push(PendingNotification { surface, ..n });
+    }
+}
 
 /// Called by Ghostty from its renderer thread. Must not call any ghostty_* API inline.
 /// Instead, schedules ghostty_app_tick() on the GLib main loop (per D-04, GHOST-07).
@@ -112,27 +134,20 @@ pub unsafe extern "C" fn action_cb(
 ) -> bool {
     use crate::ghostty::ffi;
 
-    // Phase 4: Handle bell action — set BELL_PENDING for wakeup_cb to dispatch to AppState.
+    // Phase 4: Bell — queue it; the main.rs timer sets pane/workspace attention.
     if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_RING_BELL {
-        if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
-            let surface_ptr = unsafe { _target.target.surface } as usize;
-            let pane_id = {
-                if let Ok(reg) = SURFACE_REGISTRY.lock() {
-                    reg.get(&surface_ptr).copied()
-                } else {
-                    None
-                }
-            };
-            if let Some(pane_id) = pane_id {
-                BELL_PANE_ID.store(pane_id, std::sync::atomic::Ordering::SeqCst);
-                BELL_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
+        queue_notification(_target, PendingNotification {
+            surface: 0,
+            kind: crate::app_state::NotificationKind::Bell,
+            title: String::new(),
+            body: String::new(),
+        });
         return true;
     }
 
     // OSC 9 / OSC 777 desktop notifications (e.g. Claude Code's "ghostty"
-    // notification channel). Forward them as desktop notifications.
+    // notification channel). Queued like bells so the source pane gets attention
+    // and the toast can be suppressed when that pane is already focused.
     if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_DESKTOP_NOTIFICATION {
         let n = unsafe { action.action.desktop_notification };
         let to_string = |p: *const std::os::raw::c_char| {
@@ -142,10 +157,12 @@ pub unsafe extern "C" fn action_cb(
                 unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
             }
         };
-        let title = to_string(n.title);
-        let body = to_string(n.body);
-        let title = if title.is_empty() { "cmux".to_string() } else { title };
-        crate::app_state::send_desktop_notification(&title, &body);
+        queue_notification(_target, PendingNotification {
+            surface: 0,
+            kind: crate::app_state::NotificationKind::Osc,
+            title: to_string(n.title),
+            body: to_string(n.body),
+        });
         return true;
     }
 
