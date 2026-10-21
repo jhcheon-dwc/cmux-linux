@@ -179,6 +179,80 @@ pub unsafe extern "C" fn action_cb(
         }
         return true;
     }
+
+    // terminal-actions: links, titles and search.
+    {
+        let target_surface = if _target.tag == ffi::ghostty_target_tag_e_GHOSTTY_TARGET_SURFACE {
+            (unsafe { _target.target.surface }) as usize
+        } else {
+            0
+        };
+        let c_str = |p: *const std::os::raw::c_char| {
+            if p.is_null() {
+                String::new()
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            }
+        };
+
+        // Links (ctrl+click). Always report handled: returning false would make
+        // Ghostty fall back to its own opener, bypassing our scheme checks.
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_OPEN_URL {
+            let u = unsafe { action.action.open_url };
+            if !u.url.is_null() && u.len > 0 {
+                let bytes = unsafe { std::slice::from_raw_parts(u.url as *const u8, u.len as usize) };
+                let url = String::from_utf8_lossy(bytes);
+                match crate::url_opener::open_url(&url) {
+                    Ok(argv) => eprintln!("cmux: open_url via {}: {url}", argv[0]),
+                    Err(e) => eprintln!("cmux: open_url rejected ({e}): {url:?}"),
+                }
+            }
+            return true;
+        }
+
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_SET_TITLE {
+            if target_surface != 0 {
+                let title = c_str(unsafe { action.action.set_title }.title);
+                crate::header_bar::on_set_title(target_surface, &title);
+            }
+            return true;
+        }
+
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_START_SEARCH {
+            if target_surface == 0 {
+                return false;
+            }
+            let needle = c_str(unsafe { action.action.start_search }.needle);
+            crate::find_bar::on_start_search(target_surface, &needle);
+            return true;
+        }
+
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_END_SEARCH {
+            if target_surface != 0 {
+                crate::find_bar::on_end_search(target_surface);
+            }
+            return true;
+        }
+
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_SEARCH_TOTAL {
+            let total = unsafe { action.action.search_total }.total;
+            crate::find_bar::on_search_total(
+                target_surface,
+                crate::find_bar::count_from_ssize(total as isize),
+            );
+            return true;
+        }
+
+        if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_SEARCH_SELECTED {
+            let selected = unsafe { action.action.search_selected }.selected;
+            crate::find_bar::on_search_selected(
+                target_surface,
+                crate::find_bar::count_from_ssize(selected as isize),
+            );
+            return true;
+        }
+    }
+
     // Phase 1 ignores all other actions — return false (unhandled)
     false
 }

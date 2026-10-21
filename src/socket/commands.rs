@@ -74,4 +74,9 @@ pub enum SocketCommand {
     // notifications
     /// `surface` / `workspace` are UUID strings; both None means the focused pane.
     NotificationCreate { req_id: Value, title: String, body: String, surface: Option<String>, workspace: Option<String>, resp_tx: RespTx },
+    // terminal-actions: find bar + titles
+    SurfaceFind       { req_id: Value, query: Option<String>, resp_tx: RespTx },
+    SurfaceFindNext   { req_id: Value, previous: bool, resp_tx: RespTx },
+    SurfaceFindClose  { req_id: Value, resp_tx: RespTx },
+    SurfaceFindStatus { req_id: Value, resp_tx: RespTx },
 }

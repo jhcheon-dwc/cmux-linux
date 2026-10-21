@@ -72,7 +72,11 @@ pub fn detach_surface(gl_area: &gtk4::GLArea) {
             .map(|p| p.as_ref().clone())
     };
     if let Some(cell) = cell {
-        *cell.borrow_mut() = None;
+        // terminal-actions: drop per-surface title/search state.
+        if let Some(surface) = cell.borrow_mut().take() {
+            crate::header_bar::forget_surface(surface as usize);
+            crate::find_bar::forget_surface(surface as usize);
+        }
     }
 }
 
@@ -303,6 +307,11 @@ pub fn create_surface(
             if let Ok(mut registry) = callbacks::SURFACE_REGISTRY.lock() {
                 registry.insert(surface as usize, pane_id);
             }
+            // terminal-actions: a recycled surface pointer (e.g. after a
+            // workspace close, which does not detach) must not inherit a title
+            // or become the find bar's target.
+            crate::header_bar::forget_surface(surface as usize);
+            crate::find_bar::forget_surface(surface as usize);
 
             // Set initial size and scale after surface creation.
             let scale = area.scale_factor() as f64;
