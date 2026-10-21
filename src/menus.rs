@@ -464,8 +464,8 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
         .build();
     ws_group.add_shortcut(&shortcut(&accel(A::NewWorkspace), "New Workspace"));
     ws_group.add_shortcut(&shortcut(&accel(A::CloseWorkspace), "Close Workspace"));
-    ws_group.add_shortcut(&shortcut(&accel(A::NextWorkspace), "Next Workspace"));
-    ws_group.add_shortcut(&shortcut(&accel(A::PrevWorkspace), "Previous Workspace"));
+    ws_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::NextWorkspace), accel(A::NextWorkspaceAlt)), "Next Workspace"));
+    ws_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::PrevWorkspace), accel(A::PrevWorkspaceAlt)), "Previous Workspace"));
     ws_group.add_shortcut(&shortcut(&accel(A::RenameWorkspace), "Rename Workspace"));
     ws_group.add_shortcut(&shortcut(
         &accel_range(&[

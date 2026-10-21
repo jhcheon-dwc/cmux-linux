@@ -76,6 +76,8 @@ pub struct ShortcutConfig {
     pub goto_tab_8: Option<String>,
     pub goto_tab_9: Option<String>,
     pub rename_tab: Option<String>,
+    pub next_workspace_alt: Option<String>,
+    pub prev_workspace_alt: Option<String>,
 }
 
 /// UI configuration section -- [ui] in config.toml (D-16).
@@ -177,6 +179,10 @@ pub enum ShortcutAction {
     GotoTab8,
     GotoTab9,
     RenameTab,
+    /// Second binding for NextWorkspace (Ctrl+Shift+]).
+    NextWorkspaceAlt,
+    /// Second binding for PrevWorkspace (Ctrl+Shift+[).
+    PrevWorkspaceAlt,
 }
 
 /// HashMap-based shortcut lookup table built from config + defaults.
@@ -205,6 +211,7 @@ const KNOWN_SHORTCUTS: &[&str] = &[
     "new_tab", "next_tab", "prev_tab", "next_tab_alt", "prev_tab_alt",
     "goto_tab_1", "goto_tab_2", "goto_tab_3", "goto_tab_4", "goto_tab_5",
     "goto_tab_6", "goto_tab_7", "goto_tab_8", "goto_tab_9", "rename_tab",
+    "next_workspace_alt", "prev_workspace_alt",
 ];
 
 /// Modifier mask for lookup: ignore Caps Lock, Num Lock, etc.
@@ -338,6 +345,8 @@ impl ShortcutMap {
             (ShortcutAction::GotoTab9,        &config.goto_tab_9,       "<Alt>9"),
             // Ctrl+R stays with the shell (reverse history search); macOS cmux uses Cmd+R.
             (ShortcutAction::RenameTab,       &config.rename_tab,       "<Ctrl><Alt>r"),
+            (ShortcutAction::NextWorkspaceAlt, &config.next_workspace_alt, "<Ctrl><Shift>bracketright"),
+            (ShortcutAction::PrevWorkspaceAlt, &config.prev_workspace_alt, "<Ctrl><Shift>bracketleft"),
         ];
 
         let mut map = HashMap::new();
@@ -384,8 +393,34 @@ impl ShortcutMap {
         // tabs: Shift+Tab arrives as ISO_Left_Tab; accelerators say Tab.
         let key = if key == Key::ISO_Left_Tab { Key::Tab } else { key };
         let lower_key = key.to_lower();
-        self.map.get(&(masked, lower_key)).copied()
+        self.map
+            .get(&(masked, lower_key))
+            .or_else(|| {
+                // Shift turns ] into } on the key event, but accelerators name the
+                // unshifted key (<Shift>bracketright), as letters do.
+                let unshifted = unshift_symbol(key)?;
+                self.map.get(&(masked, unshifted))
+            })
+            .copied()
     }
+}
+
+/// The unshifted key for a shifted US-layout punctuation keyval.
+fn unshift_symbol(key: Key) -> Option<Key> {
+    Some(match key {
+        Key::braceright => Key::bracketright,
+        Key::braceleft => Key::bracketleft,
+        Key::bar => Key::backslash,
+        Key::plus => Key::equal,
+        Key::underscore => Key::minus,
+        Key::colon => Key::semicolon,
+        Key::quotedbl => Key::apostrophe,
+        Key::less => Key::comma,
+        Key::greater => Key::period,
+        Key::question => Key::slash,
+        Key::asciitilde => Key::grave,
+        _ => return None,
+    })
 }
 
 // notifications
@@ -673,6 +708,11 @@ focus_pane_typo = "<Ctrl><Alt>F2"
             assert_eq!(smap.lookup(cs, Key::ISO_Left_Tab), Some(ShortcutAction::PrevTab));
             assert_eq!(smap.lookup(c, Key::Page_Down), Some(ShortcutAction::NextTabAlt));
             assert_eq!(smap.lookup(c, Key::Page_Up), Some(ShortcutAction::PrevTabAlt));
+            // Workspaces: Ctrl+] / Ctrl+[, and Ctrl+Shift+] / [ (the key event
+            // carries the shifted } / {).
+            assert_eq!(smap.lookup(c, Key::bracketright), Some(ShortcutAction::NextWorkspace));
+            assert_eq!(smap.lookup(cs, Key::braceright), Some(ShortcutAction::NextWorkspaceAlt));
+            assert_eq!(smap.lookup(cs, Key::braceleft), Some(ShortcutAction::PrevWorkspaceAlt));
             let alt = ModifierType::ALT_MASK;
             assert_eq!(smap.lookup(alt, Key::_1), Some(ShortcutAction::GotoTab1));
             assert_eq!(smap.lookup(alt, Key::_9), Some(ShortcutAction::GotoTab9));

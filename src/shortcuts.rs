@@ -39,11 +39,11 @@ pub fn install_shortcuts(
                     handle_close_workspace(&state, &app_clone);
                     gtk4::glib::Propagation::Stop
                 }
-                Some(ShortcutAction::NextWorkspace) => {
+                Some(ShortcutAction::NextWorkspace | ShortcutAction::NextWorkspaceAlt) => {
                     state.borrow_mut().switch_next();
                     gtk4::glib::Propagation::Stop
                 }
-                Some(ShortcutAction::PrevWorkspace) => {
+                Some(ShortcutAction::PrevWorkspace | ShortcutAction::PrevWorkspaceAlt) => {
                     state.borrow_mut().switch_prev();
                     gtk4::glib::Propagation::Stop
                 }
