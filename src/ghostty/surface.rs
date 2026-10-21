@@ -25,6 +25,26 @@ struct ImState {
     /// key event so Ghostty still sees the keycode. NUL-terminated.
     buf: RefCell<[u8; 128]>,
     len: Cell<usize>,
+    /// Whether the IM context and the Ghostty surface were told this pane has
+    /// focus (set on focus enter, cleared on leave).
+    focused: Cell<bool>,
+}
+
+/// Give the IM context and the Ghostty surface focus, as on focus enter.
+fn focus_in(im: &ImState, surface: ffi::ghostty_surface_t, gl_area: &gtk4::GLArea) {
+    use gtk4::prelude::*;
+    im.focused.set(true);
+    im.context.focus_in();
+    unsafe {
+        ffi::ghostty_surface_set_focus(surface, true);
+        // Kick the render loop so the cursor becomes visible immediately
+        // rather than waiting up to one blink interval (~500ms). The
+        // renderer thread processes the focused=true message asynchronously;
+        // without a refresh+queue_render here, GTK renders that happen
+        // before the message is processed show the stale (invisible) cursor.
+        ffi::ghostty_surface_refresh(surface);
+    }
+    gl_area.queue_render();
 }
 
 /// The codepoint this physical key produces with no modifiers in the active
@@ -593,6 +613,7 @@ pub fn create_surface(
         in_keyevent: Cell::new(ImKeyEvent::False),
         buf: RefCell::new([0u8; 128]),
         len: Cell::new(0),
+        focused: Cell::new(false),
     });
     {
         use gtk4::prelude::*;
@@ -687,6 +708,18 @@ pub fn create_surface(
                 Some(s) => s,
                 None => return gtk4::glib::Propagation::Proceed,
             };
+
+            // A key reached this pane, so it has focus, but focus enter never
+            // came (seen after Alt+Tab away and back under WSLg): the IM and
+            // Ghostty still think focus is elsewhere and drop the input.
+            if !im.focused.get() {
+                if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                    eprintln!("cmux-input: key without focus enter, re-focusing surface {:p}", surface);
+                }
+                if let Some(area) = ctrl.widget().and_downcast::<gtk4::GLArea>() {
+                    focus_in(&im, surface, &area);
+                }
+            }
 
             // Tell the IM where the cursor is so its candidate window shows up there.
             let (mut x, mut y, mut w, mut h) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
@@ -919,19 +952,11 @@ pub fn create_surface(
         let gl_area_for_focus = gl_area.clone();
         let im = im.clone();
         move |_ctrl| {
-            use gtk4::prelude::*;
-            im.context.focus_in();
             if let Some(surface) = *cell.borrow() {
-                unsafe {
-                    ffi::ghostty_surface_set_focus(surface, true);
-                    // Kick the render loop so the cursor becomes visible immediately
-                    // rather than waiting up to one blink interval (~500ms). The
-                    // renderer thread processes the focused=true message asynchronously;
-                    // without a refresh+queue_render here, GTK renders that happen
-                    // before the message is processed show the stale (invisible) cursor.
-                    ffi::ghostty_surface_refresh(surface);
-                }
-                gl_area_for_focus.queue_render();
+                focus_in(&im, surface, &gl_area_for_focus);
+            } else {
+                use gtk4::prelude::*;
+                im.context.focus_in();
             }
         }
     });
@@ -940,6 +965,7 @@ pub fn create_surface(
         let im = im.clone();
         move |_ctrl| {
             use gtk4::prelude::*;
+            im.focused.set(false);
             im.context.focus_out();
             if let Some(surface) = *cell.borrow() {
                 unsafe {
@@ -949,6 +975,38 @@ pub fn create_surface(
         }
     });
     gl_area.add_controller(focus_controller);
+
+    // When the window becomes active again with this pane still the focus
+    // widget, GTK may not emit focus enter; re-focus it then too.
+    gl_area.connect_map({
+        let cell = surface_cell.clone();
+        let im = im.clone();
+        let hooked = Rc::new(Cell::new(false));
+        move |area| {
+            use gtk4::prelude::*;
+            if hooked.get() {
+                return;
+            }
+            let Some(window) = area.root().and_downcast::<gtk4::Window>() else {
+                return;
+            };
+            hooked.set(true);
+            let area = area.downgrade();
+            let cell = cell.clone();
+            let im = im.clone();
+            window.connect_is_active_notify(move |window| {
+                let Some(area) = area.upgrade() else { return };
+                if window.is_active() && area.has_focus() && !im.focused.get() {
+                    if let Some(surface) = *cell.borrow() {
+                        if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                            eprintln!("cmux-input: window re-activated without focus enter, re-focusing surface {:p}", surface);
+                        }
+                        focus_in(&im, surface, &area);
+                    }
+                }
+            });
+        }
+    });
 
     // ── Scroll input ─────────────────────────────────────────────────────────────
     let scroll_controller = gtk4::EventControllerScroll::new(
