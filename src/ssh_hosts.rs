@@ -185,6 +185,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_roundtrip() {
+        let _env = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("cmux-ssh-hosts-test-{}", std::process::id()));
         let cfg_dir = dir.join("cmux");
         std::fs::create_dir_all(&cfg_dir).unwrap();

@@ -340,6 +340,7 @@ mod tests {
     /// SOCK-01: Socket path must be under XDG_RUNTIME_DIR/cmux/.
     #[test]
     fn test_socket_path_creation() {
+        let _env = crate::config::test_env_lock();
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", "/tmp/test-xdg") };
         let path = socket_path();
         assert_eq!(path, std::path::PathBuf::from("/tmp/test-xdg/cmux/cmux.sock"));

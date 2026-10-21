@@ -364,12 +364,22 @@ pub fn notifications_config() -> &'static NotificationsConfig {
     NOTIFICATIONS_CONFIG.get_or_init(NotificationsConfig::default)
 }
 
+/// Serializes tests that change process-wide environment variables
+/// (XDG_CONFIG_HOME, XDG_RUNTIME_DIR). Rust runs tests on parallel threads, so
+/// without this they race and read each other's directories.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_config_path_xdg() {
+        let _env = crate::config::test_env_lock();
         // Temporarily set XDG_CONFIG_HOME and verify config_path() uses it.
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/test-xdg-config");
         let path = config_path();
@@ -379,6 +389,7 @@ mod tests {
 
     #[test]
     fn test_load_config_missing_file() {
+        let _env = crate::config::test_env_lock();
         // Point to a nonexistent dir so load_config returns defaults silently.
         std::env::set_var("XDG_CONFIG_HOME", "/tmp/cmux-test-nonexistent-dir-xyz");
         let config = load_config();
@@ -389,6 +400,7 @@ mod tests {
 
     #[test]
     fn test_load_config_empty_file() {
+        let _env = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("cmux-cfg-empty-{}", std::process::id()));
         let cfg_dir = dir.join("cmux");
         std::fs::create_dir_all(&cfg_dir).unwrap();
@@ -404,6 +416,7 @@ mod tests {
 
     #[test]
     fn test_load_config_valid_shortcuts() {
+        let _env = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("cmux-cfg-valid-{}", std::process::id()));
         let cfg_dir = dir.join("cmux");
         std::fs::create_dir_all(&cfg_dir).unwrap();
@@ -419,6 +432,7 @@ mod tests {
 
     #[test]
     fn test_load_config_invalid_toml() {
+        let _env = crate::config::test_env_lock();
         let dir = std::env::temp_dir().join(format!("cmux-cfg-invalid-{}", std::process::id()));
         let cfg_dir = dir.join("cmux");
         std::fs::create_dir_all(&cfg_dir).unwrap();
