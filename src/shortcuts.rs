@@ -372,12 +372,14 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
         }
         // Enable WebSocket stream server, launch Chrome, navigate, start screencast
         let _ = bm.send_command("stream_enable", serde_json::json!({}));
-        let _ = bm.send_command("launch", serde_json::json!({"headless": true}));
+        let window = s.gtk_app.active_window().or_else(|| s.gtk_app.windows().into_iter().next());
+        let bm = s.browser_manager.as_mut().unwrap();
+        let _ = bm.send_command("launch", crate::browser::launch_params(window.as_ref()));
         if let Err(e) = bm.send_command("navigate", serde_json::json!({"url": "about:blank"})) {
             eprintln!("cmux: browser.open navigate failed: {e}");
             return;
         }
-        let _ = bm.send_command("screencast_start", serde_json::json!({"format": "jpeg", "quality": 80}));
+        let _ = bm.send_command("screencast_start", serde_json::json!({"format": "jpeg", "quality": 90}));
     } // drop borrow
 
     // Step 2: Create preview pane
@@ -451,10 +453,8 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
             url_entry_for_go.set_text(&url);
             let s = state_for_go.borrow();
             if let Some(ref bm) = s.browser_manager {
-                let w = picture_for_go.width();
-                let h = picture_for_go.height();
-                if w > 0 && h > 0 {
-                    let _ = bm.send_command("viewport", serde_json::json!({"width": w, "height": h}));
+                if let Some(params) = crate::browser::viewport_params(&picture_for_go) {
+                    let _ = bm.send_command("viewport", params);
                 }
                 let _ = bm.send_command("navigate", serde_json::json!({"url": url}));
             }
@@ -521,20 +521,39 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
         }
     };
 
-    // Step 4: Set viewport to match pane size (deferred until after GTK layout)
+    // Step 4: Keep the page viewport at the pane's size in device pixels so
+    // frames map 1:1 onto the screen (no rescaling blur). The sensor resizes
+    // with the Picture on every layout change (window resize, divider drag,
+    // sidebar toggle); updates are debounced so a drag doesn't flood the daemon.
     {
+        let pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let state_for_viewport = state.clone();
         let picture_for_viewport = picture_ref.clone();
-        glib::idle_add_local_once(move || {
-            let pic_w = picture_for_viewport.width();
-            let pic_h = picture_for_viewport.height();
-            if pic_w > 0 && pic_h > 0 {
-                let s = state_for_viewport.borrow();
-                if let Some(ref bm) = s.browser_manager {
-                    let _ = bm.send_command("viewport", serde_json::json!({"width": pic_w, "height": pic_h}));
-                }
+        let schedule_viewport = Rc::new(move || {
+            if let Some(id) = pending.borrow_mut().take() {
+                id.remove();
             }
+            let state = state_for_viewport.clone();
+            let picture = picture_for_viewport.clone();
+            let pending_for_fire = pending.clone();
+            let id = glib::timeout_add_local_once(std::time::Duration::from_millis(120), move || {
+                pending_for_fire.borrow_mut().take();
+                let Some(params) = crate::browser::viewport_params(&picture) else {
+                    return;
+                };
+                if let Ok(s) = state.try_borrow() {
+                    if let Some(ref bm) = s.browser_manager {
+                        let _ = bm.send_command("viewport", params);
+                    }
+                }
+            });
+            *pending.borrow_mut() = Some(id);
         });
+        let on_resize = schedule_viewport.clone();
+        widgets.viewport_sensor.connect_resize(move |_, _, _| on_resize());
+        let on_scale = schedule_viewport.clone();
+        picture_ref.connect_scale_factor_notify(move |_| on_scale());
+        schedule_viewport();
     }
 
     // Attach input controllers to the Picture for browser interaction.
@@ -719,10 +738,8 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
         let s = state_for_entry.borrow();
         if let Some(ref bm) = s.browser_manager {
             // Resize viewport to match current pane size before navigating
-            let w = picture_for_nav.width();
-            let h = picture_for_nav.height();
-            if w > 0 && h > 0 {
-                let _ = bm.send_command("viewport", serde_json::json!({"width": w, "height": h}));
+            if let Some(params) = crate::browser::viewport_params(&picture_for_nav) {
+                let _ = bm.send_command("viewport", params);
             }
             let params = serde_json::json!({"url": url});
             let _ = bm.send_command("navigate", params);

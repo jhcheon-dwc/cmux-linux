@@ -299,6 +299,9 @@ pub struct PreviewPaneWidgets {
     pub go_btn: gtk4::Button,
     pub devtools_btn: gtk4::ToggleButton,
     pub close_btn: gtk4::Button,
+    /// Invisible overlay child with the Picture's allocation; its `resize`
+    /// signal drives viewport updates (GtkPicture has no resize signal).
+    pub viewport_sensor: gtk4::DrawingArea,
     pub pane_id: u64,
     pub uuid: Uuid,
 }
@@ -310,6 +313,13 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     let picture = gtk4::Picture::new();
     picture.add_css_class("browser-preview");
     picture.set_can_shrink(true);
+    // The page viewport follows the pane size (see viewport_params), so frames
+    // already match the Picture 1:1 in device pixels. Fill instead of the
+    // default Contain: no letterbox bands while a resize is in flight (the old
+    // frame is stretched for a moment instead), and the image always covers
+    // the whole widget, so widget (x, y) maps to page (x * page_w / widget_w,
+    // y * page_h / widget_h).
+    picture.set_content_fit(gtk4::ContentFit::Fill);
     picture.set_hexpand(true);
     picture.set_vexpand(true);
 
@@ -317,6 +327,12 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     overlay.add_css_class("preview-container");
     overlay.set_child(Some(&picture));
     overlay.set_vexpand(true);
+
+    let viewport_sensor = gtk4::DrawingArea::new();
+    viewport_sensor.set_can_target(false);
+    viewport_sensor.set_halign(gtk4::Align::Fill);
+    viewport_sensor.set_valign(gtk4::Align::Fill);
+    overlay.add_overlay(&viewport_sensor);
 
     // Empty state label (shown when no stream is active)
     let empty_label = gtk4::Label::new(Some("No browser preview"));
@@ -388,8 +404,44 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
         go_btn,
         devtools_btn,
         close_btn,
+        viewport_sensor,
         pane_id: next_pane_id,
         uuid,
+    }
+}
+
+/// `viewport` command params that make the page render at the widget's size
+/// in device pixels: CSS size = widget size (logical px), deviceScaleFactor =
+/// the surface scale (fractional on HiDPI). Screencast frames then map 1:1
+/// onto screen pixels with no rescaling blur. None until the widget is allocated.
+pub fn viewport_params(widget: &impl IsA<gtk4::Widget>) -> Option<Value> {
+    let (w, h) = (widget.width(), widget.height());
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    let scale = widget
+        .native()
+        .and_then(|n| n.surface())
+        .map(|s| s.scale())
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or_else(|| widget.scale_factor().max(1) as f64);
+    Some(serde_json::json!({"width": w, "height": h, "deviceScaleFactor": scale}))
+}
+
+/// `launch` command params. Chrome only screencasts at its real device scale
+/// (an emulated deviceScaleFactor changes devicePixelRatio but frames stay at
+/// CSS size), so on HiDPI start Chrome at the window's scale.
+pub fn launch_params(window: Option<&gtk4::Window>) -> Value {
+    let scale = window
+        .and_then(|w| w.surface())
+        .map(|s| s.scale())
+        .filter(|s| s.is_finite() && *s > 1.0);
+    match scale {
+        Some(scale) => serde_json::json!({
+            "headless": true,
+            "args": [format!("--force-device-scale-factor={scale}")],
+        }),
+        None => serde_json::json!({"headless": true}),
     }
 }
 
