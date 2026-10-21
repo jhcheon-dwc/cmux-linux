@@ -37,7 +37,7 @@
 
 | 기능 | 내용 | 자세히 |
 |---|---|---|
-| 창마다 가로 탭 | 새 탭, 전환, 닫기, 드래그로 순서 변경, 세션 복원 | [탭](#탭) |
+| 창마다 가로 탭 | 새 탭, 전환, 닫기, 이름 바꾸기, 드래그로 순서 변경, 세션 복원 | [탭](#탭) |
 | Claude Code 상태 표시 | 사이드바에 실행 중 / 입력 필요 / 대기 / 오류, 진행률(OSC 9;4), 읽음 표시 | [Claude Code 상태 표시](#claude-code-상태-표시) |
 | 알림 | 사이드바 점, 보고 있는 창이면 생략, 사용자 훅, `cmux notify`, 알림 클릭 시 해당 워크스페이스로 이동 | [알림](#알림) |
 | 창 이동 | 번호로 이동, 직전 창으로 돌아가기, 키보드로 분할선 이동, 균등 분할, 작업 디렉터리 상속 | [단축키](#단축키) |
@@ -144,6 +144,8 @@ contrib/wsl/setup.sh --skip-build --no-windows --claude-hooks
 | `StopFailure` | Error |
 | `SessionEnd` | 상태 지움 |
 
+Claude Code가 응답하는 동안(상태가 Running이면) 행에 움직이는 진행바가 표시됩니다. Claude Code는 답변을 생성하는 동안에는 진행 신호(OSC 9;4)를 보내지 않으므로, 이 표시는 훅이 알려 주는 상태를 기준으로 합니다(`--claude-hooks` 필요). 프로그램이 실제 진행률을 보내면 그 값을 우선 표시합니다.
+
 워크스페이스의 알림 점(읽지 않음)은 그 워크스페이스로 이동하면 사라집니다. 사이드바 행을 오른쪽 클릭해서 **Mark as Unread / Mark as Read**로 직접 바꿀 수도 있습니다.
 
 ## 사용 시 주의
@@ -165,6 +167,7 @@ macOS cmux처럼 창(pane)마다 여러 터미널 탭을 열 수 있습니다. �
 - 탭에는 터미널 제목(OSC 0/2)이 표시되고, 없으면 `Terminal N`입니다. 백그라운드 탭에서 벨이나 알림이 오면 주황색 점이 붙습니다.
 - 탭 클릭: 선택, 가운데 클릭 또는 `×`: 닫기, 드래그: 같은 창 안에서 순서 바꾸기.
 - `Ctrl+Shift+X`는 현재 탭만 닫고, 마지막 탭일 때 창을 닫습니다.
+- 탭 이름 바꾸기: 탭을 더블클릭하거나, 오른쪽 클릭 → **Rename Tab…**, 또는 `Ctrl+Alt+R`(현재 탭). 이름을 비우면 터미널 제목으로 돌아갑니다. 이름은 세션에 저장되고, 이름을 붙인 탭은 창에 탭이 하나뿐이어도 탭 막대에 표시됩니다. CLI: `cmux rename-tab "이름" [--surface UUID]`(빈 문자열이면 해제), 소켓: `tab.rename`.
 - 분할·포커스 이동·찾기·알림은 각 창의 보이는 탭을 대상으로 합니다. 탭마다 셸에 자기 `CMUX_SURFACE_ID`가 들어갑니다.
 - 세션에 탭 목록(UUID, 작업 디렉터리, 선택된 탭)이 저장되고 다시 열면 복원됩니다. 탭 이전에 저장된 세션 파일도 그대로 열립니다.
 - 탭이 하나여도 탭 막대를 보려면 `~/.config/cmux/config.toml`에 `[ui]` `always_show_tabs = true`를 넣습니다.
@@ -189,6 +192,7 @@ macOS cmux처럼 창(pane)마다 여러 터미널 탭을 열 수 있습니다. �
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 다음 / 이전 탭 | `next_tab` / `prev_tab` |
 | `Ctrl+PageDown` / `Ctrl+PageUp` | 다음 / 이전 탭 | `next_tab_alt` / `prev_tab_alt` |
 | `Alt+1`~`9` | 현재 창의 N번째 탭으로 이동 | `goto_tab_1`~`goto_tab_9` |
+| `Ctrl+Alt+R` | 현재 탭 이름 바꾸기 (macOS의 `Cmd+R`; `Ctrl+R`은 셸 기록 검색이라 피함) | `rename_tab` |
 | `Ctrl+Shift+←/→/↑/↓` | 이전 / 다음 창으로 포커스 (트리 순서 기준) | `focus_left` / `focus_right` / `focus_up` / `focus_down` |
 | `Ctrl+Alt+1`~`9` | N번째 창으로 포커스 (왼쪽→오른쪽, 위→아래 순서) | `focus_pane_1`~`focus_pane_9` |
 | ``Ctrl+Alt+` `` | 직전에 포커스했던 창으로 돌아가기 | `focus_last_pane` |

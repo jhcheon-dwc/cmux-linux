@@ -139,6 +139,67 @@ pub fn move_in_order<T>(others: &mut Vec<T>, active: &mut usize, from: usize, to
     true
 }
 
+// ── custom tab names (Rename Tab) ─────────────────────────────────────────
+
+/// Longest custom tab name kept, in characters.
+pub const MAX_TITLE_CHARS: usize = 80;
+
+thread_local! {
+    /// Names the user gave tabs, by tab surface UUID. A custom name wins over
+    /// the terminal's OSC title; it is saved in session.json (`tab_titles`).
+    static CUSTOM_TITLES: RefCell<std::collections::HashMap<Uuid, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// A typed tab name as stored: control characters become spaces, whitespace
+/// is trimmed, length is capped. None (empty) means "use the automatic title".
+pub fn normalize_title(input: &str) -> Option<String> {
+    let cleaned: String = input
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    (!trimmed.is_empty()).then(|| trimmed.chars().take(MAX_TITLE_CHARS).collect())
+}
+
+pub fn custom_title(uuid: &Uuid) -> Option<String> {
+    CUSTOM_TITLES.with(|m| m.borrow().get(uuid).cloned())
+}
+
+/// Set (or with an empty `title`, clear) a tab's custom name. Returns whether it changed.
+pub fn set_custom_title(uuid: Uuid, title: &str) -> bool {
+    CUSTOM_TITLES.with(|m| {
+        let mut m = m.borrow_mut();
+        match normalize_title(title) {
+            Some(t) => m.insert(uuid, t.clone()).as_deref() != Some(t.as_str()),
+            None => m.remove(&uuid).is_some(),
+        }
+    })
+}
+
+/// Custom names for session.json, limited to tabs that still exist.
+pub fn custom_titles_for_session(keep: impl Fn(&Uuid) -> bool) -> std::collections::BTreeMap<String, String> {
+    CUSTOM_TITLES.with(|m| {
+        m.borrow()
+            .iter()
+            .filter(|(u, _)| keep(u))
+            .map(|(u, t)| (u.to_string(), t.clone()))
+            .collect()
+    })
+}
+
+/// Load custom names from session.json (before panes are restored).
+pub fn load_custom_titles(saved: &std::collections::BTreeMap<String, String>) {
+    CUSTOM_TITLES.with(|m| {
+        let mut m = m.borrow_mut();
+        for (u, t) in saved {
+            if let (Ok(uuid), Some(title)) = (Uuid::parse_str(u), normalize_title(t)) {
+                m.insert(uuid, title);
+            }
+        }
+    });
+}
+
 /// Tab label: the terminal's OSC title, else "Terminal N" (1-based).
 pub fn tab_label(title: Option<&str>, index: usize) -> String {
     match title.map(str::trim) {
@@ -169,7 +230,10 @@ pub struct TabData {
 pub struct TabView {
     /// GLArea pointer: identifies the tab in click/drag requests.
     pub gl_ptr: usize,
+    pub uuid: Uuid,
     pub title: String,
+    /// The title is a name the user gave this tab (keeps the bar visible).
+    pub custom: bool,
     pub active: bool,
     pub attention: bool,
 }
@@ -226,7 +290,10 @@ impl PaneTabsUi {
 
     /// Show `views` (tab order) in the bar.
     pub fn render(&self, views: &[TabView]) {
-        self.bar.set_visible(bar_visible(views.len(), always_show_tabs()));
+        // A renamed tab keeps its bar even when it is the pane's only tab;
+        // otherwise the name would be invisible.
+        let renamed = views.iter().any(|v| v.custom);
+        self.bar.set_visible(bar_visible(views.len(), always_show_tabs()) || renamed);
         if *self.rendered.borrow() == views {
             return;
         }
@@ -270,14 +337,20 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     close.connect_clicked(move |_| request(TabRequest::Close(ptr)));
     item.append(&close);
 
-    // Left click selects, middle click closes. On release: selecting rebuilds
-    // the bar, which would cancel a drag started on this tab.
+    // Left click selects, double-click renames, middle click closes, right
+    // click opens the tab menu. On release: selecting rebuilds the bar, which
+    // would cancel a drag started on this tab.
     let click = gtk4::GestureClick::new();
     click.set_button(0);
-    click.connect_released(move |gesture, _, _, _| match gesture.current_button() {
-        1 => request(TabRequest::Select(ptr)),
-        2 => request(TabRequest::Close(ptr)),
-        _ => {}
+    click.connect_released({
+        let item = item.clone();
+        move |gesture, n_press, _, _| match gesture.current_button() {
+            1 if n_press == 2 => request(TabRequest::Rename(ptr)),
+            1 => request(TabRequest::Select(ptr)),
+            2 => request(TabRequest::Close(ptr)),
+            3 => show_tab_menu(&item, ptr),
+            _ => {}
+        }
     });
     item.add_controller(click);
 
@@ -300,6 +373,145 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     });
     item.add_controller(drop);
     item
+}
+
+/// Right-click menu of a tab: Rename / Close.
+fn show_tab_menu(item: &gtk4::Box, ptr: usize) {
+    let popover = gtk4::Popover::new();
+    popover.add_css_class("cmux-tab-menu");
+    popover.set_has_arrow(false);
+    popover.set_parent(item);
+    let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    for (label, req) in [("Rename Tab…", TabRequest::Rename(ptr)), ("Close Tab", TabRequest::Close(ptr))] {
+        let button = gtk4::Button::with_label(label);
+        button.add_css_class("cmux-menu-item");
+        if let Some(l) = button.child().and_downcast::<gtk4::Label>() {
+            l.set_xalign(0.0);
+        }
+        button.connect_clicked({
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                request(req);
+            }
+        });
+        list.append(&button);
+    }
+    popover.set_child(Some(&list));
+    // The bar is rebuilt on re-render; unparent so the popover goes with it.
+    popover.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    popover.popup();
+}
+
+/// "Rename tab" dialog for tab `uuid`, prefilled with its current label.
+/// An empty name restores the automatic title (the terminal's OSC title).
+fn prompt_rename(state: &crate::app_state::AppStateRef, uuid: Uuid, current: &str) {
+    let parent = state.try_borrow().ok().and_then(|s| s.gtk_app.active_window());
+    let dialog = gtk4::Window::builder()
+        .title("Rename Tab")
+        .modal(true)
+        .resizable(false)
+        .default_width(320)
+        .build();
+    dialog.add_css_class("cmux-dialog");
+    if let Some(parent) = &parent {
+        dialog.set_transient_for(Some(parent));
+    }
+    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    body.add_css_class("cmux-dialog-body");
+    let hint = gtk4::Label::new(Some("Leave empty to use the terminal's own title."));
+    hint.add_css_class("cmux-dialog-hint");
+    hint.set_xalign(0.0);
+    hint.set_wrap(true);
+    let entry = gtk4::Entry::new();
+    entry.set_text(current);
+    entry.set_placeholder_text(Some("Tab name"));
+    entry.set_max_length(MAX_TITLE_CHARS as i32);
+    entry.set_activates_default(true);
+    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk4::Align::End);
+    let cancel = gtk4::Button::with_label("Cancel");
+    cancel.add_css_class("cmux-button");
+    let rename = gtk4::Button::with_label("Rename");
+    rename.add_css_class("cmux-button");
+    rename.add_css_class("suggested");
+    buttons.append(&cancel);
+    buttons.append(&rename);
+    body.append(&entry);
+    body.append(&hint);
+    body.append(&buttons);
+    dialog.set_child(Some(&body));
+    dialog.set_default_widget(Some(&rename));
+
+    cancel.connect_clicked({
+        let dialog = dialog.clone();
+        move |_| dialog.close()
+    });
+    rename.connect_clicked({
+        let dialog = dialog.clone();
+        let entry = entry.clone();
+        let state = Rc::downgrade(state);
+        move |_| {
+            if let Some(state) = state.upgrade() {
+                apply_rename(&state, uuid, &entry.text());
+            }
+            dialog.close();
+        }
+    });
+    let keys = gtk4::EventControllerKey::new();
+    keys.connect_key_pressed({
+        let dialog = dialog.clone();
+        move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape {
+                dialog.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    });
+    dialog.add_controller(keys);
+    dialog.present();
+    entry.grab_focus();
+    entry.select_region(0, -1);
+}
+
+/// Store a tab's name, relabel the bars and save the session. Returns the
+/// effective label source: Some(name) when a custom name is set.
+fn apply_rename(state: &crate::app_state::AppStateRef, uuid: Uuid, title: &str) -> Option<String> {
+    if set_custom_title(uuid, title) {
+        on_title_changed();
+        save_session(state);
+    }
+    custom_title(&uuid)
+}
+
+/// (uuid, current label) of terminal `tab_id` in workspace `ws_idx`.
+fn tab_identity(s: &crate::app_state::AppState, ws_idx: usize, tab_id: u64) -> Option<(Uuid, String)> {
+    let engine = s.split_engines.get(ws_idx)?;
+    let uuid = Uuid::parse_str(&engine.find_uuid_for_pane(tab_id)?).ok()?;
+    let title = engine
+        .pane_tabs(tab_id)
+        .into_iter()
+        .find(|t| t.uuid == uuid)
+        .map(|t| t.title)
+        .unwrap_or_default();
+    Some((uuid, title))
+}
+
+/// Rename the focused tab (Ctrl+Alt+R): works on single-tab panes too.
+pub fn handle_rename_tab(state: &crate::app_state::AppStateRef) {
+    let target = {
+        let Ok(s) = state.try_borrow() else { return };
+        let Some(engine) = s.active_split_engine() else { return };
+        tab_identity(&s, s.active_index, engine.active_pane_id)
+    };
+    if let Some((uuid, title)) = target {
+        prompt_rename(state, uuid, &title);
+    }
 }
 
 const DRAG_PREFIX: &str = "cmux-tab:";
@@ -334,6 +546,7 @@ fn app_state() -> Option<crate::app_state::AppStateRef> {
 enum TabRequest {
     Select(usize),
     Close(usize),
+    Rename(usize),
     Move { from: usize, to: usize },
 }
 
@@ -345,7 +558,7 @@ fn request(req: TabRequest) {
 fn handle_request(req: TabRequest) {
     let Some(state) = app_state() else { return };
     let gl_ptr = match req {
-        TabRequest::Select(p) | TabRequest::Close(p) => p,
+        TabRequest::Select(p) | TabRequest::Close(p) | TabRequest::Rename(p) => p,
         TabRequest::Move { from, .. } => from,
     };
     let Ok(s) = state.try_borrow() else { return };
@@ -358,8 +571,15 @@ fn handle_request(req: TabRequest) {
         return;
     };
     let app = s.gtk_app.clone();
+    let identity = tab_identity(&s, ws_idx, tab_id);
     drop(s);
     match req {
+        TabRequest::Rename(_) => {
+            if let Some((uuid, title)) = identity {
+                prompt_rename(&state, uuid, &title);
+            }
+            return;
+        }
         TabRequest::Select(_) => {
             with_attention_sync(&state, ws_idx, |engine| {
                 engine.focus_pane(tab_id);
@@ -434,8 +654,12 @@ pub fn live_surface(gl_area: &gtk4::GLArea, stored: ffi::ghostty_surface_t) -> O
         .or_else(|| (!stored.is_null()).then_some(stored))
 }
 
-/// Label for a tab's terminal.
-pub fn title_for(gl_area: &gtk4::GLArea, index: usize) -> String {
+/// Label for a tab's terminal: its custom name, else the terminal's OSC title,
+/// else "Terminal N".
+pub fn title_for(gl_area: &gtk4::GLArea, uuid: &Uuid, index: usize) -> String {
+    if let Some(name) = custom_title(uuid) {
+        return name;
+    }
     let title = live_surface(gl_area, std::ptr::null_mut())
         .and_then(|s| crate::header_bar::title_for_surface(s as usize));
     tab_label(title.as_deref(), index)
@@ -717,6 +941,19 @@ pub fn handle_socket(
             save_session(state);
             Ok(tab_list_json(&state.borrow(), ws_idx, tab_id))
         }
+        "tab.rename" => {
+            // Not focus-intent: renames in place (SOCK-05).
+            let Some(title) = params.get("title").and_then(|v| v.as_str()) else {
+                return Err(("invalid_params", "title (string) is required; empty clears".to_string()));
+            };
+            let (uuid, _) = {
+                let s = state.borrow();
+                let (ws_idx, tab_id) = resolve_terminal(&s, surface)?;
+                tab_identity(&s, ws_idx, tab_id).ok_or(("not_found", "tab not found".to_string()))?
+            };
+            let custom = apply_rename(state, uuid, title);
+            Ok(json!({"surface_id": uuid.to_string(), "title": custom, "custom": custom.is_some()}))
+        }
         _ => Err(("not_implemented", format!("{method} is not implemented"))),
     }
 }
@@ -729,6 +966,41 @@ pub const SOCKET_METHODS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_title_rules() {
+        assert_eq!(normalize_title("  빌드 서버  ").as_deref(), Some("빌드 서버"));
+        assert_eq!(normalize_title("a\nb\tc").as_deref(), Some("a b c"));
+        assert_eq!(normalize_title("   "), None);
+        assert_eq!(normalize_title(""), None);
+        let long = "가".repeat(MAX_TITLE_CHARS + 10);
+        assert_eq!(normalize_title(&long).map(|t| t.chars().count()), Some(MAX_TITLE_CHARS));
+    }
+
+    #[test]
+    fn custom_titles_set_clear_and_session_roundtrip() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        assert!(set_custom_title(a, "에이전트 1"));
+        assert!(!set_custom_title(a, " 에이전트 1 ")); // same after trim: unchanged
+        assert!(set_custom_title(b, "logs"));
+        assert_eq!(custom_title(&a).as_deref(), Some("에이전트 1"));
+        // Session snapshot keeps only live tabs.
+        let saved = custom_titles_for_session(|u| *u == a);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved.get(&a.to_string()).map(String::as_str), Some("에이전트 1"));
+        // Empty clears.
+        assert!(set_custom_title(b, ""));
+        assert_eq!(custom_title(&b), None);
+        assert!(!set_custom_title(b, ""));
+        // Load ignores bad UUIDs and empty names.
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(b.to_string(), "restored".to_string());
+        m.insert("not-a-uuid".to_string(), "x".to_string());
+        m.insert(Uuid::new_v4().to_string(), "  ".to_string());
+        load_custom_titles(&m);
+        assert_eq!(custom_title(&b).as_deref(), Some("restored"));
+    }
 
     /// Tab order as seen by the user: others with the active tab at `active`.
     fn order(others: &[char], active: usize, active_tab: char) -> String {

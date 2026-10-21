@@ -159,6 +159,29 @@ components:
     backgroundColor: "{colors.surface-chrome}"
     textColor: "{colors.success}"
     typography: "{typography.status}"
+  dialog:
+    backgroundColor: "{colors.surface-raised}"
+    textColor: "{colors.text-primary}"
+    typography: "{typography.body-md}"
+    padding: 16px
+  text-input:
+    backgroundColor: "{colors.neutral}"
+    textColor: "{colors.text-primary}"
+    typography: "{typography.body-md}"
+    rounded: "{rounded.md}"
+    height: 30px
+  button:
+    backgroundColor: "{colors.surface-hover}"
+    textColor: "{colors.text-primary}"
+    typography: "{typography.body-sm}"
+    rounded: "{rounded.md}"
+    height: 28px
+  button-primary:
+    backgroundColor: "{colors.text-primary}"
+    textColor: "{colors.on-primary}"
+    typography: "{typography.status}"
+    rounded: "{rounded.md}"
+    height: 28px
   pane-gutter:
     backgroundColor: "{colors.surface-sunken}"
     size: 3px
@@ -317,7 +340,16 @@ sit above the terminal. Nothing else has a shadow, glow or gradient.
   none. Gutters are `pane-gutter`.
 - **Find bar**: `surface-raised` floating at the top-right of the pane, with a
   match counter in `text-secondary` `caption`.
-- **Menus**: `surface-raised`, items highlight with `surface-hover`.
+- **Menus**: `surface-raised`, items highlight with `surface-hover`. The tab
+  context menu (right-click a tab) offers Rename Tab… and Close Tab.
+- **Dialog** (Rename Tab): `surface-raised` window, a `text-input` on the
+  terminal surface, a quiet `button` for Cancel and one `button-primary`. The
+  primary button is light-on-dark (`text-primary` fill), not a hue: color
+  stays reserved for agent signals.
+- **Tab names**: a tab shows its custom name if the user gave one (double-click
+  the tab, right-click → Rename Tab…, or Ctrl+Alt+R), else the terminal's OSC
+  title, else "Terminal N". A renamed tab keeps the tab bar visible even when
+  it is the pane's only tab, so the name is never hidden.
 
 ## Do's and Don'ts
 

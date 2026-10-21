@@ -90,7 +90,10 @@ button.sidebar-close-btn:hover { color: var(--color-text-primary); background-co
 .workspace-list row label.agent-status.status-idle { color: var(--color-text-secondary); }
 .workspace-list row label.agent-status-message { font-size: var(--font-size-caption); font-weight: 400; color: var(--color-text-secondary); }
 
-progressbar.workspace-progress { margin-top: var(--space-xs); }
+/* The theme gives progress troughs a ~150px minimum width, which widened the
+   sidebar (and made it twitch) whenever a bar appeared. */
+progressbar.workspace-progress { margin-top: var(--space-xs); min-width: 0; }
+progressbar.workspace-progress > trough { min-width: 0; }
 progressbar.workspace-progress trough { min-height: 2px; border-radius: var(--rounded-full); background-color: var(--color-line-strong); border: none; }
 progressbar.workspace-progress progress { min-height: 2px; border-radius: var(--rounded-full); background-color: var(--color-secondary); border: none; }
 progressbar.workspace-progress.progress-error progress { background-color: var(--color-tertiary); }
@@ -177,3 +180,22 @@ button.browser-nav-btn:disabled { opacity: 0.4; }
 .browser-nav-devtools:checked { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
 .devtools-overlay { background-color: alpha(var(--color-surface-sunken), 0.92); }
 .devtools-snapshot { color: var(--color-text-primary); font-family: monospace; font-size: var(--font-size-body-sm); padding: var(--space-xl); }
+
+/* ── Dialogs (Rename Tab) ─────────────────────────────────────────────────── */
+window.cmux-dialog { background-color: var(--color-surface-raised); color: var(--color-text-primary); }
+window.cmux-dialog headerbar { background: var(--color-surface-raised); border-bottom: 1px solid var(--color-line); box-shadow: none; min-height: 34px; }
+window.cmux-dialog headerbar .title { font-size: var(--font-size-label); font-weight: 700; color: var(--color-text-primary); }
+.cmux-dialog-body { padding: var(--space-xl); }
+.cmux-dialog-body entry { background-color: var(--color-neutral); color: var(--color-text-primary); border: 1px solid var(--color-line-strong); border-radius: var(--rounded-md); box-shadow: none; min-height: 30px; padding: 0 var(--space-md); font-size: var(--font-size-label); }
+.cmux-dialog-body entry:focus-within { border-color: var(--color-focus); }
+.cmux-dialog-hint { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+button.cmux-button { background: var(--color-surface-hover); color: var(--color-text-primary); border: none; box-shadow: none; border-radius: var(--rounded-md); min-height: 28px; padding: 0 var(--space-lg); font-size: var(--font-size-body-sm); }
+button.cmux-button:hover { background: var(--color-line-strong); }
+/* The one primary action: a light button, not a brand color (color is signal). */
+button.cmux-button.suggested { background: var(--color-text-primary); color: var(--color-on-primary); font-weight: 700; }
+button.cmux-button.suggested:hover { background: var(--color-text-secondary); }
+
+/* ── Tab context menu ─────────────────────────────────────────────────────── */
+popover.cmux-tab-menu > contents { padding: var(--space-xs); }
+button.cmux-menu-item { background: none; border: none; box-shadow: none; border-radius: var(--rounded-sm); color: var(--color-text-primary); font-size: var(--font-size-label); min-height: 28px; padding: 0 var(--space-lg); }
+button.cmux-menu-item:hover { background-color: var(--color-surface-hover); }

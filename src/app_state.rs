@@ -592,6 +592,15 @@ impl AppState {
                             layout,
                         }
                     }).collect(),
+                    tab_titles: {
+                        // tabs: only names of tabs that still exist.
+                        let live: std::collections::HashSet<uuid::Uuid> = self
+                            .split_engines
+                            .iter()
+                            .flat_map(|e| e.all_surfaces().into_iter().map(|s| s.uuid))
+                            .collect();
+                        crate::tabs::custom_titles_for_session(|u| live.contains(u))
+                    },
                 };
                 let _ = tx.send(session);
             }
@@ -666,8 +675,13 @@ impl AppState {
         }
         for ws in self.workspaces.iter_mut() {
             ws.progress_reports.retain(|r| now.duration_since(r.3) < STALE);
-            // Show the most recently updated report (pushed last).
-            let shown = ws.progress_reports.last().map(|r| (r.1, r.2));
+            // Show the most recently updated report (pushed last). Without one, an
+            // agent that is running gets an indeterminate bar: Claude Code only
+            // sends OSC 9;4 for some long operations, not while it is responding.
+            let shown = crate::agent_status::displayed_progress(
+                ws.progress_reports.last().map(|r| (r.1, r.2)),
+                ws.agent_status.as_ref().map(|s| s.state),
+            );
             if shown != ws.progress {
                 ws.progress = shown;
                 if let Some(row) = &ws.sidebar_row {

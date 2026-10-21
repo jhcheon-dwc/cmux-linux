@@ -229,6 +229,14 @@ pub fn register_actions(
     action.set_enabled(false); // TODO: enable when BrowserManager.current_url() is available
     window.add_action(&action);
 
+    // tabs: win.rename-tab
+    let action = gio::SimpleAction::new("rename-tab", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| crate::tabs::handle_rename_tab(&state)
+    });
+    window.add_action(&action);
+
     // tabs: win.new-tab / win.next-tab / win.prev-tab
     let action = gio::SimpleAction::new("new-tab", None);
     action.connect_activate({
@@ -322,6 +330,7 @@ pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::Short
     // tabs: next/previous tab have two bindings each.
     let pairs: &[(&str, &[A])] = &[
         ("win.new-tab", &[A::NewTab]),
+        ("win.rename-tab", &[A::RenameTab]),
         ("win.next-tab", &[A::NextTab, A::NextTabAlt]),
         ("win.prev-tab", &[A::PrevTab, A::PrevTabAlt]),
     ];
@@ -344,6 +353,7 @@ pub fn build_hamburger_menu() -> gio::Menu {
     file_section.append(Some("New SSH Workspace"), Some("win.new-ssh-workspace"));
     file_section.append(Some("New Browser"), Some("win.browser-open"));
     file_section.append(Some("New Tab"), Some("win.new-tab")); // tabs
+    file_section.append(Some("Rename Tab…"), Some("win.rename-tab")); // tabs
     file_section.append(Some("Close Pane"), Some("win.close-pane"));
     file_section.append(Some("Close Workspace"), Some("win.close-workspace"));
     file_section.append(Some("Quit"), Some("app.quit"));
@@ -395,6 +405,7 @@ pub fn build_terminal_context_menu() -> gio::Menu {
     pane_section.append(Some("Split Right"), Some("win.split-right"));
     pane_section.append(Some("Split Down"), Some("win.split-down"));
     pane_section.append(Some("New Tab"), Some("win.new-tab")); // tabs
+    pane_section.append(Some("Rename Tab…"), Some("win.rename-tab")); // tabs
     pane_section.append(Some("Close Pane"), Some("win.close-pane"));
     menu.append_section(None, &pane_section);
 
@@ -491,6 +502,7 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
         .title("Tabs")
         .build();
     tab_group.add_shortcut(&shortcut(&accel(A::NewTab), "New Tab"));
+    tab_group.add_shortcut(&shortcut(&accel(A::RenameTab), "Rename Tab"));
     tab_group.add_shortcut(&shortcut(&accel(A::ClosePane), "Close Tab (closes the pane on its last tab)"));
     tab_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::NextTab), accel(A::NextTabAlt)), "Next Tab"));
     tab_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::PrevTab), accel(A::PrevTabAlt)), "Previous Tab"));

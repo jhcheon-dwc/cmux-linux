@@ -75,6 +75,7 @@ pub struct ShortcutConfig {
     pub goto_tab_7: Option<String>,
     pub goto_tab_8: Option<String>,
     pub goto_tab_9: Option<String>,
+    pub rename_tab: Option<String>,
 }
 
 /// UI configuration section -- [ui] in config.toml (D-16).
@@ -175,6 +176,7 @@ pub enum ShortcutAction {
     GotoTab7,
     GotoTab8,
     GotoTab9,
+    RenameTab,
 }
 
 /// HashMap-based shortcut lookup table built from config + defaults.
@@ -202,7 +204,7 @@ const KNOWN_SHORTCUTS: &[&str] = &[
     // tabs
     "new_tab", "next_tab", "prev_tab", "next_tab_alt", "prev_tab_alt",
     "goto_tab_1", "goto_tab_2", "goto_tab_3", "goto_tab_4", "goto_tab_5",
-    "goto_tab_6", "goto_tab_7", "goto_tab_8", "goto_tab_9",
+    "goto_tab_6", "goto_tab_7", "goto_tab_8", "goto_tab_9", "rename_tab",
 ];
 
 /// Modifier mask for lookup: ignore Caps Lock, Num Lock, etc.
@@ -334,6 +336,8 @@ impl ShortcutMap {
             (ShortcutAction::GotoTab7,        &config.goto_tab_7,       "<Alt>7"),
             (ShortcutAction::GotoTab8,        &config.goto_tab_8,       "<Alt>8"),
             (ShortcutAction::GotoTab9,        &config.goto_tab_9,       "<Alt>9"),
+            // Ctrl+R stays with the shell (reverse history search); macOS cmux uses Cmd+R.
+            (ShortcutAction::RenameTab,       &config.rename_tab,       "<Ctrl><Alt>r"),
         ];
 
         let mut map = HashMap::new();

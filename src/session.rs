@@ -20,6 +20,10 @@ pub struct SessionData {
     /// Index of the active workspace in the workspaces array.
     pub active_index: usize,
     pub workspaces: Vec<WorkspaceSession>,
+    /// tabs: custom tab names by tab surface UUID (Rename Tab). Missing in
+    /// sessions saved before tab renaming existed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub tab_titles: std::collections::BTreeMap<String, String>,
 }
 
 /// Returns the session file path.
@@ -109,6 +113,7 @@ mod tests {
                     active_tab: 0,
                 },
             }],
+            tab_titles: Default::default(),
         }
     }
 

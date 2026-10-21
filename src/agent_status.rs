@@ -219,8 +219,27 @@ pub fn claude_hook_update(event: &str, payload: &Value) -> Option<(StatusUpdate,
     }
 }
 
+/// Progress shown on a workspace row: the latest OSC 9;4 report, else an
+/// indeterminate "working" bar while the agent is running.
+pub fn displayed_progress(
+    report: Option<(ProgressState, i8)>,
+    agent: Option<AgentState>,
+) -> Option<(ProgressState, i8)> {
+    report.or_else(|| (agent == Some(AgentState::Running)).then_some((ProgressState::Indeterminate, -1)))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn displayed_progress_prefers_reports_then_running() {
+        let set = Some((ProgressState::Set, 40));
+        assert_eq!(displayed_progress(set, Some(AgentState::Running)), set);
+        assert_eq!(displayed_progress(None, Some(AgentState::Running)), Some((ProgressState::Indeterminate, -1)));
+        assert_eq!(displayed_progress(None, Some(AgentState::Idle)), None);
+        assert_eq!(displayed_progress(None, Some(AgentState::NeedsInput)), None);
+        assert_eq!(displayed_progress(None, None), None);
+    }
+
     use super::*;
     use serde_json::json;
 

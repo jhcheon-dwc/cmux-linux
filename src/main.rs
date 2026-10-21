@@ -56,6 +56,8 @@ fn main() {
     let saved_session = crate::session::load_session();
     if let Some(ref s) = saved_session {
         eprintln!("cmux: restoring session ({} workspace(s))", s.workspaces.len());
+        // tabs: custom tab names, before panes (and their tab bars) are built.
+        crate::tabs::load_custom_titles(&s.tab_titles);
     }
 
     // Session save infrastructure: Notify for debounce, channel for session snapshots.
@@ -448,7 +450,12 @@ fn build_ui(
                     .map(|mut q| std::mem::take(&mut *q))
                     .unwrap_or_default();
                 let needs_update = !events.is_empty()
-                    || state.borrow().workspaces.iter().any(|ws| ws.progress.is_some());
+                    || state.borrow().workspaces.iter().any(|ws| {
+                        ws.progress.is_some()
+                            || ws.agent_status.as_ref().is_some_and(|s| {
+                                s.state == crate::agent_status::AgentState::Running
+                            })
+                    });
                 if needs_update {
                     state.borrow_mut().apply_progress_reports(events);
                 }

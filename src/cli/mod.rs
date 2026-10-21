@@ -287,6 +287,14 @@ pub enum Commands {
         #[arg(long)]
         surface: Option<String>,
     },
+    /// Rename a terminal tab (an empty name restores the terminal's own title)
+    RenameTab {
+        /// New tab name ("" clears the custom name)
+        title: String,
+        /// Tab surface ID (default: the focused tab)
+        #[arg(long, alias = "id")]
+        surface: Option<String>,
+    },
     /// Close a terminal tab (closes the pane on its last tab)
     CloseTab {
         /// Tab surface ID (default: the focused tab)
@@ -809,6 +817,14 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
                 p.insert("surface_id".into(), json!(s));
             }
             ("tab.new", Value::Object(p))
+        }
+        Commands::RenameTab { title, surface } => {
+            let mut p = serde_json::Map::new();
+            p.insert("title".into(), json!(title));
+            if let Some(ref s) = surface {
+                p.insert("surface_id".into(), json!(s));
+            }
+            ("tab.rename", Value::Object(p))
         }
         Commands::CloseTab { id } => {
             let mut p = serde_json::Map::new();

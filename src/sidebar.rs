@@ -9,7 +9,7 @@ use std::rc::Rc;
 /// so it doesn't scroll away.
 ///
 /// Per UI-SPEC:
-/// - Width: 160px (set_size_request(160, -1))
+/// - Width: 200px (set_size_request(200, -1))
 /// - Styling: src/style/components.css (cmux Signal design system, DESIGN.md)
 /// - Row height: 36px min-height (CSS)
 /// - Row padding: 8px top/bottom, 16px left/right
@@ -22,7 +22,9 @@ pub fn build_sidebar() -> (gtk4::Box, gtk4::ScrolledWindow, gtk4::ListBox) {
     list_box.add_css_class("workspace-list");
 
     let scrolled = gtk4::ScrolledWindow::new();
-    scrolled.set_size_request(160, -1);
+    // Fixed width (DESIGN.md: sidebar 200px); rows never widen it (names and
+    // status messages ellipsize, progress bars have no minimum width).
+    scrolled.set_size_request(200, -1);
     scrolled.set_hscrollbar_policy(gtk4::PolicyType::Never);
     scrolled.set_vscrollbar_policy(gtk4::PolicyType::Automatic);
     scrolled.set_child(Some(&list_box));
@@ -248,6 +250,10 @@ impl SidebarRow {
                 self.status_message.set_text("");
             }
         }
+        // Keep the reserved (transparent) progress space in step with the status line.
+        if self.progress.opacity() == 0.0 {
+            self.progress.set_visible(self.status_box.is_visible());
+        }
     }
 
     pub fn set_progress(&self, progress: Option<(crate::agent_status::ProgressState, i8)>) {
@@ -255,12 +261,12 @@ impl SidebarRow {
         self.progress.remove_css_class("progress-error");
         self.progress.remove_css_class("progress-paused");
         let Some((state, value)) = progress else {
-            self.progress.set_visible(false);
+            self.hide_progress();
             return;
         };
         match state {
             ProgressState::Remove => {
-                self.progress.set_visible(false);
+                self.hide_progress();
                 return;
             }
             ProgressState::Error => self.progress.add_css_class("progress-error"),
@@ -272,7 +278,15 @@ impl SidebarRow {
         } else {
             self.progress.set_fraction(value.clamp(0, 100) as f64 / 100.0);
         }
+        self.progress.set_opacity(1.0);
         self.progress.set_visible(true);
+    }
+
+    /// Hide the progress bar. A row with a status line keeps the bar's space
+    /// (transparent) so the list doesn't jump when a bar comes and goes.
+    fn hide_progress(&self) {
+        self.progress.set_opacity(0.0);
+        self.progress.set_visible(self.status_box.is_visible());
     }
 }
 

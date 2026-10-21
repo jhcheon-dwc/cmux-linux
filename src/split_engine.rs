@@ -2409,9 +2409,11 @@ impl SplitNode {
         let views: Vec<crate::tabs::TabView> = leaf_tabs_in_order(self)
             .iter()
             .enumerate()
-            .map(|(i, (_, _, area, attention, active))| crate::tabs::TabView {
+            .map(|(i, (_, uuid, area, attention, active))| crate::tabs::TabView {
                 gl_ptr: area.as_ptr() as usize,
-                title: crate::tabs::title_for(area, i),
+                uuid: *uuid,
+                title: crate::tabs::title_for(area, uuid, i),
+                custom: crate::tabs::custom_title(uuid).is_some(),
                 active: *active,
                 attention: *attention,
             })
@@ -2669,7 +2671,7 @@ impl SplitEngine {
                 active,
                 pane_active: leaf_id == self.active_pane_id,
                 has_attention,
-                title: crate::tabs::title_for(&area, index),
+                title: crate::tabs::title_for(&area, &uuid, index),
             })
             .collect()
     }

@@ -174,6 +174,10 @@ pub fn install_shortcuts(
                     crate::tabs::handle_new_tab(&state);
                     gtk4::glib::Propagation::Stop
                 }
+                Some(ShortcutAction::RenameTab) => {
+                    crate::tabs::handle_rename_tab(&state);
+                    gtk4::glib::Propagation::Stop
+                }
                 // Tab switching keys reach the terminal when the pane has one tab.
                 Some(ShortcutAction::NextTab | ShortcutAction::NextTabAlt)
                     if crate::tabs::active_pane_has_tabs(&state) =>
