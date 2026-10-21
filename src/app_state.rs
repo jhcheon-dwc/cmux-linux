@@ -45,6 +45,9 @@ pub struct AppState {
     pub browser_surface_counter: u32,
     /// Maps short-ref ID -> surface UUID (lost on restart, per D-06).
     pub browser_surface_refs: std::collections::HashMap<u32, String>,
+    // socket-cli
+    /// UUID of the previously active workspace (backs workspace.last).
+    pub previous_workspace: Option<uuid::Uuid>,
 }
 
 impl AppState {
@@ -76,6 +79,7 @@ impl AppState {
             browser_manager: None,
             browser_surface_counter: 0,
             browser_surface_refs: std::collections::HashMap::new(),
+            previous_workspace: None, // socket-cli
         };
         Rc::new(RefCell::new(state))
     }
@@ -391,6 +395,10 @@ impl AppState {
         if index >= self.workspaces.len() {
             return;
         }
+        // socket-cli: remember the previously active workspace for workspace.last.
+        if index != self.active_index {
+            self.previous_workspace = self.workspaces.get(self.active_index).map(|ws| ws.uuid);
+        }
         // Phase 4: clear attention when user switches to a workspace (D-05).
         self.clear_workspace_attention(index);
         self.active_index = index;
@@ -462,10 +470,15 @@ impl AppState {
 
     /// Rename the active workspace. Per D-03/D-10: Ctrl+Shift+R (UI wired in Plan 04/05).
     pub fn rename_active(&mut self, new_name: String) {
-        if let Some(ws) = self.workspaces.get_mut(self.active_index) {
+        self.rename_at(self.active_index, new_name);
+    }
+
+    /// Rename the workspace at `index` without switching to it (socket-cli).
+    pub fn rename_at(&mut self, index: usize, new_name: String) {
+        if let Some(ws) = self.workspaces.get_mut(index) {
             ws.rename(new_name.clone());
             // Update the sidebar label (Phase 4 nested layout: row > hbox > vbox > label).
-            if let Some(row) = self.sidebar_list.row_at_index(self.active_index as i32) {
+            if let Some(row) = self.sidebar_list.row_at_index(index as i32) {
                 if let Some(hbox) = row.child().and_downcast::<gtk4::Box>() {
                     if let Some(vbox) = hbox.first_child().and_downcast::<gtk4::Box>() {
                         if let Some(label) = vbox.first_child().and_downcast::<gtk4::Label>() {

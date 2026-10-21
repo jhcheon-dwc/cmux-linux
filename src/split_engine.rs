@@ -1137,17 +1137,15 @@ impl SplitEngine {
         update_surface_in_tree(&mut self.root, pane_id, surface);
     }
 
-    fn find_surface(&self, pane_id: u64) -> Option<ffi::ghostty_surface_t> {
+    /// Live Ghostty surface of a pane in THIS engine. The tree pointer is filled
+    /// lazily after realize, so fall back to the pane's GLArea in GL_TO_SURFACE.
+    /// (socket-cli: pane_id is only unique per workspace, so never resolve it via a
+    /// global pane_id scan — that could hit another workspace's surface.)
+    pub fn find_surface(&self, pane_id: u64) -> Option<ffi::ghostty_surface_t> {
         find_surface_in_tree(&self.root, pane_id).or_else(|| {
-            // Fallback: look up in global SURFACE_REGISTRY by scanning for pane_id.
-            // SURFACE_REGISTRY maps surface_ptr (usize) → pane_id; need reverse lookup.
-            if let Ok(reg) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
-                reg.iter()
-                    .find(|(_, &pid)| pid == pane_id)
-                    .map(|(&ptr, _)| ptr as ffi::ghostty_surface_t)
-            } else {
-                None
-            }
+            let key = self.find_gl_area(pane_id)?.as_ptr() as usize;
+            let map = crate::ghostty::callbacks::GL_TO_SURFACE.lock().ok()?;
+            map.get(&key).map(|&ptr| ptr as ffi::ghostty_surface_t)
         })
     }
 
