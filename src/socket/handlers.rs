@@ -267,6 +267,9 @@ pub fn handle_socket_command(
                 // app-storage
                 "browser.storage_get", "browser.storage_remove",
                 "browser.cookies_get", "browser.cookies_delete",
+                // app-idb
+                "browser.indexeddb_databases", "browser.indexeddb_data",
+                "browser.indexeddb_clear", "browser.indexeddb_delete",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
