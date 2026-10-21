@@ -74,22 +74,9 @@ pub fn register_actions(
     let action = gio::SimpleAction::new("copy", None);
     action.connect_activate({
         let state = state.clone();
+        let window = window.clone();
         move |_, _| {
-            let s = state.borrow();
-            if let Some(engine) = s.active_split_engine() {
-                if let Some(pane_id) = engine.root.find_active_pane_id() {
-                    if let Some(surface) = engine.root.find_surface_for_pane(pane_id) {
-                        let action_str = b"copy_to_clipboard";
-                        unsafe {
-                            crate::ghostty::ffi::ghostty_surface_binding_action(
-                                surface,
-                                action_str.as_ptr() as *const _,
-                                action_str.len(),
-                            );
-                        }
-                    }
-                }
-            }
+            perform_terminal_binding(&window, &state, b"copy_to_clipboard");
         }
     });
     window.add_action(&action);
@@ -98,22 +85,9 @@ pub fn register_actions(
     let action = gio::SimpleAction::new("paste", None);
     action.connect_activate({
         let state = state.clone();
+        let window = window.clone();
         move |_, _| {
-            let s = state.borrow();
-            if let Some(engine) = s.active_split_engine() {
-                if let Some(pane_id) = engine.root.find_active_pane_id() {
-                    if let Some(surface) = engine.root.find_surface_for_pane(pane_id) {
-                        let action_str = b"paste_from_clipboard";
-                        unsafe {
-                            crate::ghostty::ffi::ghostty_surface_binding_action(
-                                surface,
-                                action_str.as_ptr() as *const _,
-                                action_str.len(),
-                            );
-                        }
-                    }
-                }
-            }
+            perform_terminal_binding(&window, &state, b"paste_from_clipboard");
         }
     });
     window.add_action(&action);
@@ -251,6 +225,45 @@ pub fn register_actions(
     let action = gio::SimpleAction::new("copy-url", None);
     action.set_enabled(false); // TODO: enable when BrowserManager.current_url() is available
     window.add_action(&action);
+}
+
+/// Run a Ghostty binding action on the terminal that has keyboard focus.
+///
+/// Prefer the focused GLArea (resolved through GL_TO_SURFACE) over the split
+/// tree: after a session restore, panes in different workspaces can share a
+/// pane_id, so find_surface_for_pane may return a stale or unrealized surface.
+fn perform_terminal_binding(
+    window: &gtk4::ApplicationWindow,
+    state: &Rc<RefCell<crate::app_state::AppState>>,
+    action: &[u8],
+) {
+    let focused = gtk4::prelude::GtkWindowExt::focus(window).and_then(|w| {
+        let map = crate::ghostty::callbacks::GL_TO_SURFACE.lock().ok()?;
+        map.get(&(w.as_ptr() as usize)).copied()
+    });
+    let surface = match focused {
+        Some(s) => s as crate::ghostty::ffi::ghostty_surface_t,
+        None => {
+            let s = state.borrow();
+            let Some(surface) = s.active_split_engine().and_then(|engine| {
+                let pane_id = engine.root.find_active_pane_id()?;
+                engine.root.find_surface_for_pane(pane_id)
+            }) else {
+                return;
+            };
+            surface
+        }
+    };
+    if surface.is_null() {
+        return;
+    }
+    unsafe {
+        crate::ghostty::ffi::ghostty_surface_binding_action(
+            surface,
+            action.as_ptr() as *const _,
+            action.len(),
+        );
+    }
 }
 
 /// Register keyboard accelerators for GIO actions so menus show shortcut hints.
