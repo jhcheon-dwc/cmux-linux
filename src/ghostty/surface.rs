@@ -610,12 +610,18 @@ pub fn create_surface(
             let cell = surface_cell.clone();
             move |ctx| {
                 // fcitx5-hangul can commit and then immediately start a new
-                // preedit without preedit-start, so always mark composing here.
-                im.composing.set(true);
+                // preedit without preedit-start, so a non-empty preedit marks
+                // composing here. An empty one (sent e.g. by the Wayland IM
+                // module without preedit-end) must clear it: a stale flag makes
+                // Ghostty drop every key until focus leaves and re-enters.
+                let (preedit, _, _) = ctx.preedit_string();
+                im.composing.set(!preedit.is_empty());
+                if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                    eprintln!("cmux-input: preedit-changed {:?}", preedit.as_str());
+                }
                 let Some(surface) = *cell.borrow() else {
                     return;
                 };
-                let (preedit, _, _) = ctx.preedit_string();
                 unsafe {
                     ffi::ghostty_surface_preedit(
                         surface,
@@ -703,6 +709,16 @@ pub fn create_surface(
                 .unwrap_or(false);
             let was_composing = im.in_keyevent.get() == ImKeyEvent::Composing;
             im.in_keyevent.set(ImKeyEvent::False);
+            if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                eprintln!(
+                    "cmux-input: surface key {} im_handled={} composing={} was_composing={} committed={}",
+                    keyval.name().as_deref().unwrap_or("?"),
+                    im_handled,
+                    im.composing.get(),
+                    was_composing,
+                    im.len.get()
+                );
+            }
 
             if crate::ghostty::input::im_swallows_key(
                 im_handled,
