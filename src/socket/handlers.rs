@@ -264,6 +264,10 @@ pub fn handle_socket_command(
                 "browser.network.list", "browser.network.clear", "browser.devtools.url",
                 "browser.highlight",
                 "browser.state.save", "browser.state.load",
+                // app-cache-sw
+                "browser.cache_list", "browser.cache_entries", "browser.cache_delete",
+                "browser.service_workers", "browser.service_worker_unregister",
+                "browser.service_worker_update",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
