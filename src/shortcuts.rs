@@ -537,156 +537,167 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
         });
     }
 
-    // Attach mouse click controller to the Picture for browser interaction
+    // Attach input controllers to the Picture for browser interaction.
+    // Coordinates go through browser::widget_to_page_point: the frame is
+    // letterboxed inside the Picture and input is in page CSS pixels.
     {
-        let click_ctrl = gtk4::GestureClick::new();
-        let state_for_click = state.clone();
-        let picture_for_click = picture_ref.clone();
-        click_ctrl.connect_released(move |_gesture, _n_press, x, y| {
-            // D-09: Grab focus on the container so keyboard events resume flowing to Chrome
-            if let Some(parent_box) = picture_for_click.parent()
-                .and_then(|o| o.parent()) // overlay -> container box
-            {
-                parent_box.grab_focus();
-            }
-            // Scale widget coordinates to viewport coordinates
-            let pic_w = picture_for_click.width() as f64;
-            let pic_h = picture_for_click.height() as f64;
-            if pic_w <= 0.0 || pic_h <= 0.0 {
-                return;
-            }
-            // Get the current viewport size from the texture paintable
-            let (vp_w, vp_h) = picture_for_click
-                .paintable()
-                .map(|p| (p.intrinsic_width() as f64, p.intrinsic_height() as f64))
-                .unwrap_or((pic_w, pic_h));
-            let scale_x = vp_w / pic_w;
-            let scale_y = vp_h / pic_h;
-            let cx = (x * scale_x) as i64;
-            let cy = (y * scale_y) as i64;
+        let page_css_size = state
+            .borrow()
+            .browser_manager
+            .as_ref()
+            .map(|bm| bm.page_css_size.clone())
+            .unwrap_or_default();
+        let to_page = {
+            let picture = picture_ref.clone();
+            move |x: f64, y: f64| preview_point_to_page(&picture, &page_css_size, x, y)
+        };
 
-            let s = state_for_click.borrow();
-            if let Some(ref bm) = s.browser_manager {
-                // mousePressed + mouseReleased = click
-                let _ = bm.send_command("input_mouse", serde_json::json!({
-                    "type": "mousePressed", "x": cx, "y": cy,
-                    "button": "left", "clickCount": 1
+        // The Picture itself takes keyboard focus on click (the container would
+        // also receive keys bubbling up from the URL entry).
+        picture_ref.set_focusable(true);
+
+        // Press and release are sent separately so double clicks (n_press) and
+        // drag selection work. The release comes from a GestureDrag: GestureClick
+        // stops without "released" once the pointer moves past the drag threshold.
+        let pressed: Rc<std::cell::Cell<Option<i32>>> = Rc::default();
+        let click_ctrl = gtk4::GestureClick::new();
+        {
+            let state = state.clone();
+            let picture = picture_ref.clone();
+            let to_page = to_page.clone();
+            let pressed = pressed.clone();
+            click_ctrl.connect_pressed(move |_gesture, n_press, x, y| {
+                // D-09: focus the page so keyboard events flow to Chrome.
+                picture.grab_focus();
+                let Some((px, py, inside)) = to_page(x, y) else { return };
+                if !inside {
+                    return; // letterbox bar
+                }
+                pressed.set(Some(n_press));
+                browser_send(&state, "input_mouse", serde_json::json!({
+                    "type": "mousePressed", "x": px, "y": py,
+                    "button": "left", "clickCount": n_press
                 }));
-                let _ = bm.send_command("input_mouse", serde_json::json!({
-                    "type": "mouseReleased", "x": cx, "y": cy,
-                    "button": "left", "clickCount": 1
-                }));
-            }
-        });
+            });
+        }
         picture_ref.add_controller(click_ctrl);
 
-        // Attach mouse motion controller for hover effects (async channel, D-08)
-        let motion_ctrl = gtk4::EventControllerMotion::new();
-        if let Some(mtx) = motion_tx {
-            let picture_for_motion = picture_ref.clone();
-            motion_ctrl.connect_motion(move |_ctrl, x, y| {
-                let pic_w = picture_for_motion.width() as f64;
-                let pic_h = picture_for_motion.height() as f64;
-                if pic_w <= 0.0 || pic_h <= 0.0 {
-                    return;
-                }
-                let (vp_w, vp_h) = picture_for_motion
-                    .paintable()
-                    .map(|p| (p.intrinsic_width() as f64, p.intrinsic_height() as f64))
-                    .unwrap_or((pic_w, pic_h));
-                let scale_x = vp_w / pic_w;
-                let scale_y = vp_h / pic_h;
-                let mx = (x * scale_x) as i64;
-                let my = (y * scale_y) as i64;
-                let _ = mtx.send((mx, my));
+        let release_ctrl = gtk4::GestureDrag::new();
+        {
+            let state = state.clone();
+            let to_page = to_page.clone();
+            release_ctrl.connect_drag_end(move |gesture, dx, dy| {
+                let Some(n_press) = pressed.take() else { return };
+                let (sx, sy) = gesture.start_point().unwrap_or((0.0, 0.0));
+                let Some((px, py, _)) = to_page(sx + dx, sy + dy) else { return };
+                browser_send(&state, "input_mouse", serde_json::json!({
+                    "type": "mouseReleased", "x": px, "y": py,
+                    "button": "left", "clickCount": n_press
+                }));
             });
+        }
+        picture_ref.add_controller(release_ctrl);
+
+        // Attach mouse motion controller for hover effects (async channel, D-08).
+        // The last pointer position also anchors wheel scrolling.
+        let pointer: Rc<std::cell::Cell<Option<(f64, f64)>>> = Rc::default();
+        let motion_ctrl = gtk4::EventControllerMotion::new();
+        {
+            let pointer = pointer.clone();
+            let to_page = to_page.clone();
+            motion_ctrl.connect_motion(move |_ctrl, x, y| {
+                pointer.set(Some((x, y)));
+                if let (Some(mtx), Some((px, py, _))) = (motion_tx.as_ref(), to_page(x, y)) {
+                    let _ = mtx.send((px as i64, py as i64));
+                }
+            });
+        }
+        {
+            let pointer = pointer.clone();
+            motion_ctrl.connect_leave(move |_| pointer.set(None));
         }
         picture_ref.add_controller(motion_ctrl);
 
-        // Attach scroll controller for scroll wheel forwarding
+        // Attach scroll controller for scroll wheel forwarding (both axes)
         let scroll_ctrl = gtk4::EventControllerScroll::new(
-            gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::DISCRETE,
+            gtk4::EventControllerScrollFlags::BOTH_AXES,
         );
-        let state_for_scroll = state.clone();
-        let picture_for_scroll = picture_ref.clone();
-        scroll_ctrl.connect_scroll(move |_ctrl, _dx, dy| {
-            let pic_w = picture_for_scroll.width() as f64;
-            let pic_h = picture_for_scroll.height() as f64;
-            if pic_w <= 0.0 || pic_h <= 0.0 {
-                return gtk4::glib::Propagation::Proceed;
-            }
-            // Scroll at center of viewport; dy is in discrete scroll units
-            let (vp_w, vp_h) = picture_for_scroll
-                .paintable()
-                .map(|p| (p.intrinsic_width() as f64, p.intrinsic_height() as f64))
-                .unwrap_or((pic_w, pic_h));
-            let cx = (vp_w / 2.0) as i64;
-            let cy = (vp_h / 2.0) as i64;
-            // CDP mouseWheel uses pixel delta; ~120px per scroll tick
-            let delta_y = (dy * 120.0) as i64;
-
-            let s = state_for_scroll.borrow();
-            if let Some(ref bm) = s.browser_manager {
-                let _ = bm.send_command("input_mouse", serde_json::json!({
-                    "type": "mouseWheel", "x": cx, "y": cy,
-                    "deltaX": 0, "deltaY": delta_y
+        {
+            let state = state.clone();
+            let picture = picture_ref.clone();
+            scroll_ctrl.connect_scroll(move |ctrl, dx, dy| {
+                // Scroll under the pointer, else at the center of the page.
+                let (x, y) = pointer.get().unwrap_or((
+                    picture.width() as f64 / 2.0,
+                    picture.height() as f64 / 2.0,
+                ));
+                let Some((px, py, _)) = to_page(x, y) else {
+                    return gtk4::glib::Propagation::Proceed;
+                };
+                // Wheel notches arrive as +-1 steps; touchpads already in pixels.
+                let step = match ctrl.unit() {
+                    gtk4::gdk::ScrollUnit::Wheel => 120.0,
+                    _ => 1.0,
+                };
+                browser_send(&state, "input_mouse", serde_json::json!({
+                    "type": "mouseWheel", "x": px, "y": py,
+                    "deltaX": dx * step, "deltaY": dy * step
                 }));
-            }
-            gtk4::glib::Propagation::Stop
-        });
+                gtk4::glib::Propagation::Stop
+            });
+        }
         picture_ref.add_controller(scroll_ctrl);
 
-        // Attach keyboard controller for key forwarding to Chrome
+        // Keyboard: text goes through an input method context so IME input
+        // (e.g. Korean) arrives as committed strings; keys the IM does not
+        // consume (Enter, Backspace, arrows, Tab, Ctrl chords) come to
+        // key-pressed. Both use the daemon's "press" action, which sends the
+        // virtual key codes Chrome needs for editing keys.
+        let im_context = gtk4::IMMulticontext::new();
+        im_context.set_client_widget(Some(&picture_ref));
+        {
+            let state = state.clone();
+            im_context.connect_commit(move |_, text| {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) if c == ' ' || c.is_ascii_graphic() => {
+                        browser_send(&state, "press", serde_json::json!({"key": text}));
+                    }
+                    _ => browser_send(&state, "inserttext", serde_json::json!({"text": text})),
+                }
+            });
+        }
+        let focus_ctrl = gtk4::EventControllerFocus::new();
+        {
+            let im = im_context.clone();
+            focus_ctrl.connect_enter(move |_| im.focus_in());
+            let im = im_context.clone();
+            focus_ctrl.connect_leave(move |_| im.focus_out());
+        }
+        picture_ref.add_controller(focus_ctrl);
+
         let key_ctrl = gtk4::EventControllerKey::new();
+        key_ctrl.set_im_context(Some(&im_context));
         // Bubble phase so cmux capture-phase shortcuts (Ctrl+Shift+B etc) take priority
         key_ctrl.set_propagation_phase(gtk4::PropagationPhase::Bubble);
-        let state_for_key = state.clone();
-        key_ctrl.connect_key_pressed(move |_ctrl, keyval, _keycode, mods| {
-            let s = state_for_key.borrow();
-            let bm = match s.browser_manager.as_ref() {
-                Some(bm) => bm,
-                None => return gtk4::glib::Propagation::Proceed,
-            };
-            let (key_str, code_str) = gdk_keyval_to_cdp(keyval);
-            if key_str.is_empty() {
-                return gtk4::glib::Propagation::Proceed;
-            }
-            let text = if key_str.len() == 1 && !mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
-                key_str.clone()
-            } else {
-                String::new()
-            };
-            let modifiers = cdp_modifiers(mods);
-            let mut params = serde_json::json!({
-                "type": "keyDown", "key": key_str, "code": code_str,
-                "modifiers": modifiers
-            });
-            if !text.is_empty() {
-                params.as_object_mut().unwrap().insert("text".to_string(), serde_json::json!(text));
-            }
-            let _ = bm.send_command("input_keyboard", params);
-            gtk4::glib::Propagation::Stop
-        });
-        let state_for_keyup = state.clone();
-        key_ctrl.connect_key_released(move |_ctrl, keyval, _keycode, mods| {
-            let s = state_for_keyup.borrow();
-            if let Some(ref bm) = s.browser_manager {
-                let (key_str, code_str) = gdk_keyval_to_cdp(keyval);
-                if !key_str.is_empty() {
-                    let modifiers = cdp_modifiers(mods);
-                    let _ = bm.send_command("input_keyboard", serde_json::json!({
-                        "type": "keyUp", "key": key_str, "code": code_str,
-                        "modifiers": modifiers
-                    }));
-                }
-            }
-        });
-        // Attach to container (the focusable Box) so it receives key events when preview is focused
-        if let Some(parent_box) = picture_ref.parent()
-            .and_then(|o| o.parent()) // overlay -> container box
         {
-            parent_box.set_focusable(true);
-            parent_box.add_controller(key_ctrl);
+            let state = state.clone();
+            key_ctrl.connect_key_pressed(move |_ctrl, keyval, _keycode, mods| {
+                let Some(chord) = cdp_key_chord(keyval, mods) else {
+                    return gtk4::glib::Propagation::Proceed;
+                };
+                browser_send(&state, "press", serde_json::json!({"key": chord}));
+                gtk4::glib::Propagation::Stop
+            });
+        }
+        picture_ref.add_controller(key_ctrl);
+    }
+
+    // Keep the URL bar in sync with the page (link clicks, back/forward, CLI).
+    {
+        let s = state.borrow();
+        if let (Some(rt), Some(bm)) = (s.runtime_handle.as_ref(), s.browser_manager.as_ref()) {
+            crate::browser::spawn_url_watcher(rt, bm.daemon_socket_path(), &url_entry);
         }
     }
 
@@ -827,14 +838,57 @@ fn gdk_keyval_to_cdp(keyval: gtk4::gdk::Key) -> (String, String) {
     }
 }
 
-/// Convert GDK modifier flags to CDP modifier bitmask.
-/// CDP: Alt=1, Ctrl=2, Meta=4, Shift=8
-fn cdp_modifiers(mods: gtk4::gdk::ModifierType) -> i32 {
-    let mut m = 0;
-    if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) { m |= 1; }
-    if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) { m |= 2; }
-    if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) { m |= 8; }
-    m
+/// Key chord for the daemon's "press" action ("Enter", "Shift+Tab", "Control+a"),
+/// or None for keys that are not forwarded (lone modifiers, unknown keys).
+fn cdp_key_chord(keyval: gtk4::gdk::Key, mods: gtk4::gdk::ModifierType) -> Option<String> {
+    use gtk4::gdk::ModifierType;
+    let (key, _code) = gdk_keyval_to_cdp(keyval);
+    if key.is_empty() {
+        return None;
+    }
+    let ctrl = mods.contains(ModifierType::CONTROL_MASK);
+    let alt = mods.contains(ModifierType::ALT_MASK);
+    // For characters Shift is already in the keyval ("A", "!").
+    let shift = mods.contains(ModifierType::SHIFT_MASK) && (key.chars().count() > 1 || ctrl || alt);
+    let mut chord = String::new();
+    for (on, name) in [(ctrl, "Control+"), (alt, "Alt+"), (shift, "Shift+")] {
+        if on {
+            chord.push_str(name);
+        }
+    }
+    chord.push_str(&key);
+    Some(chord)
+}
+
+/// Map a point in the preview Picture to page CSS pixels: (x, y, inside page).
+/// The page size comes from the screencast metadata, falling back to the
+/// frame size until the first frame has arrived.
+fn preview_point_to_page(
+    picture: &gtk4::Picture,
+    page_css_size: &std::sync::Mutex<Option<(f64, f64)>>,
+    x: f64,
+    y: f64,
+) -> Option<(f64, f64, bool)> {
+    let paintable = picture.paintable()?;
+    let image = (paintable.intrinsic_width() as f64, paintable.intrinsic_height() as f64);
+    let page = page_css_size.lock().ok().and_then(|s| *s).unwrap_or(image);
+    let widget = (picture.width() as f64, picture.height() as f64);
+    let (px, py) =
+        crate::browser::widget_to_page_point(picture.content_fit(), widget, image, page, (x, y))?;
+    let inside = px >= 0.0 && py >= 0.0 && px < page.0 && py < page.1;
+    Some((px, py, inside))
+}
+
+/// Send a command to the browser daemon if the browser is running. Skips instead
+/// of panicking when a re-entrant callback finds AppState already borrowed.
+fn browser_send(state: &Rc<RefCell<AppState>>, action: &str, params: serde_json::Value) {
+    if let Ok(s) = state.try_borrow() {
+        if let Some(ref bm) = s.browser_manager {
+            if let Err(e) = bm.send_command(action, params) {
+                eprintln!("cmux: browser {action} failed: {e}");
+            }
+        }
+    }
 }
 
 /// Close the browser preview and shut down the daemon (Ctrl+Shift+Q).
@@ -852,5 +906,28 @@ pub fn handle_browser_close(state: &Rc<RefCell<AppState>>) {
     if let Some(ref mut bm) = s.browser_manager {
         bm.shutdown();
         s.browser_manager = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gtk4::gdk::{Key, ModifierType};
+
+    #[test]
+    fn key_chords_for_browser_press() {
+        let none = ModifierType::empty();
+        assert_eq!(cdp_key_chord(Key::Return, none).as_deref(), Some("Enter"));
+        assert_eq!(cdp_key_chord(Key::BackSpace, none).as_deref(), Some("Backspace"));
+        assert_eq!(cdp_key_chord(Key::Tab, ModifierType::SHIFT_MASK).as_deref(), Some("Shift+Tab"));
+        assert_eq!(
+            cdp_key_chord(Key::Left, ModifierType::SHIFT_MASK).as_deref(),
+            Some("Shift+ArrowLeft")
+        );
+        assert_eq!(cdp_key_chord(Key::a, ModifierType::CONTROL_MASK).as_deref(), Some("Control+a"));
+        // Shift is already part of a typed character.
+        assert_eq!(cdp_key_chord(Key::A, ModifierType::SHIFT_MASK).as_deref(), Some("A"));
+        // Lone modifiers are not forwarded.
+        assert_eq!(cdp_key_chord(Key::Shift_L, ModifierType::SHIFT_MASK), None);
     }
 }

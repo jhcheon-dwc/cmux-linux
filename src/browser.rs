@@ -26,6 +26,10 @@ pub struct BrowserManager {
     stream_task: Option<tokio::task::JoinHandle<()>>,
     pub frame_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     pub preview_state: PreviewState,
+    /// Page viewport in CSS pixels, from the latest screencast frame metadata.
+    /// Input coordinates are in CSS pixels, which differ from the frame's
+    /// pixel size whenever the device scale factor is not 1.
+    pub page_css_size: std::sync::Arc<std::sync::Mutex<Option<(f64, f64)>>>,
 }
 
 impl BrowserManager {
@@ -36,6 +40,7 @@ impl BrowserManager {
             stream_task: None,
             frame_tx: None,
             preview_state: PreviewState::Empty,
+            page_css_size: Default::default(),
         }
     }
 
@@ -206,6 +211,7 @@ impl BrowserManager {
         // Create mpsc channel for frame delivery (tokio -> GTK)
         let (frame_tx, mut frame_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
         self.frame_tx = Some(frame_tx.clone());
+        let page_css_size = self.page_css_size.clone();
 
         // Spawn tokio task: WebSocket client that reads frames
         let stream_task = runtime.spawn(async move {
@@ -229,6 +235,11 @@ impl BrowserManager {
                 if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
                     if let Ok(frame) = serde_json::from_str::<serde_json::Value>(text) {
                         if frame.get("type").and_then(|t| t.as_str()) == Some("frame") {
+                            if let Some(size) = frame_css_size(&frame) {
+                                if let Ok(mut s) = page_css_size.lock() {
+                                    *s = Some(size);
+                                }
+                            }
                             if let Some(data_b64) = frame.get("data").and_then(|d| d.as_str()) {
                                 if let Ok(jpeg_bytes) = base64::engine::general_purpose::STANDARD.decode(data_b64) {
                                     let _ = frame_tx.send(jpeg_bytes);
@@ -499,4 +510,178 @@ fn rand_u64() -> u64 {
     std::time::SystemTime::now().hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
     hasher.finish()
+}
+
+/// Page viewport size in CSS pixels from a screencast `frame` message.
+fn frame_css_size(frame: &Value) -> Option<(f64, f64)> {
+    let meta = frame.get("metadata")?;
+    let w = meta.get("deviceWidth")?.as_f64()?;
+    let h = meta.get("deviceHeight")?.as_f64()?;
+    (w > 0.0 && h > 0.0).then_some((w, h))
+}
+
+/// Rectangle (x, y, width, height) where a GtkPicture of size `widget` draws a
+/// paintable of intrinsic size `image` under `fit`. GtkPicture centers the
+/// scaled image, so Contain/ScaleDown leave letterbox bars around it.
+pub fn picture_content_rect(
+    fit: gtk4::ContentFit,
+    widget: (f64, f64),
+    image: (f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    let ((ww, wh), (iw, ih)) = (widget, image);
+    if ww <= 0.0 || wh <= 0.0 || iw <= 0.0 || ih <= 0.0 {
+        return None;
+    }
+    let contain = (ww / iw).min(wh / ih);
+    let (dw, dh) = match fit {
+        gtk4::ContentFit::Fill => (ww, wh),
+        gtk4::ContentFit::Cover => {
+            let s = (ww / iw).max(wh / ih);
+            (iw * s, ih * s)
+        }
+        gtk4::ContentFit::ScaleDown => {
+            let s = contain.min(1.0);
+            (iw * s, ih * s)
+        }
+        _ => (iw * contain, ih * contain),
+    };
+    Some(((ww - dw) / 2.0, (wh - dh) / 2.0, dw, dh))
+}
+
+/// Map a point in the preview Picture (widget coordinates) to page CSS pixels.
+/// `image` is the frame's pixel size, `page` the page viewport in CSS pixels.
+/// The result can lie outside the page when the point is on a letterbox bar.
+pub fn widget_to_page_point(
+    fit: gtk4::ContentFit,
+    widget: (f64, f64),
+    image: (f64, f64),
+    page: (f64, f64),
+    point: (f64, f64),
+) -> Option<(f64, f64)> {
+    let (x0, y0, dw, dh) = picture_content_rect(fit, widget, image)?;
+    Some(((point.0 - x0) * page.0 / dw, (point.1 - y0) * page.1 / dh))
+}
+
+/// Query the page's current URL from the daemon (blocking, with a timeout).
+fn query_page_url(daemon_socket_path: &std::path::Path) -> Option<String> {
+    let mut stream = std::os::unix::net::UnixStream::connect(daemon_socket_path).ok()?;
+    let timeout = Some(std::time::Duration::from_secs(2));
+    stream.set_read_timeout(timeout).ok()?;
+    stream.set_write_timeout(timeout).ok()?;
+    stream.write_all(b"{\"id\":\"cmux-url\",\"action\":\"url\"}\n").ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    let resp: Value = serde_json::from_str(&line).ok()?;
+    resp.get("data")?.get("url")?.as_str().map(str::to_string)
+}
+
+/// Keep `url_entry` showing the page's current URL, whatever navigated it (link
+/// clicks, back/forward, `cmux browser open`). Polls the daemon off the GTK
+/// thread and stops once the entry leaves the window. The entry is not touched
+/// while it has focus, so typing a URL is never clobbered.
+pub fn spawn_url_watcher(
+    runtime: &tokio::runtime::Handle,
+    daemon_socket_path: PathBuf,
+    url_entry: &gtk4::Entry,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    runtime.spawn(async move {
+        while !tx.is_closed() {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let path = daemon_socket_path.clone();
+            let url = tokio::task::spawn_blocking(move || query_page_url(&path)).await;
+            if let Ok(Some(url)) = url {
+                if tx.send(url).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let entry_weak = url_entry.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        while let Some(url) = rx.recv().await {
+            let Some(entry) = entry_weak.upgrade() else { break };
+            let Some(root) = entry.root() else { break };
+            if root.focus().is_some_and(|f| f.is_ancestor(&entry)) {
+                continue;
+            }
+            // about:blank shows the placeholder instead.
+            let text = if url == "about:blank" { "" } else { url.as_str() };
+            if entry.text() != text {
+                entry.set_text(text);
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gtk4::ContentFit;
+
+    #[test]
+    fn content_rect_letterboxes_wide_frame_vertically() {
+        // 600x500 frame in a 300x500 widget: scaled to 300x250, centered.
+        let r = picture_content_rect(ContentFit::Contain, (300.0, 500.0), (600.0, 500.0));
+        assert_eq!(r, Some((0.0, 125.0, 300.0, 250.0)));
+    }
+
+    #[test]
+    fn content_rect_scale_down_never_upscales() {
+        let r = picture_content_rect(ContentFit::ScaleDown, (800.0, 600.0), (400.0, 300.0));
+        assert_eq!(r, Some((200.0, 150.0, 400.0, 300.0)));
+    }
+
+    #[test]
+    fn content_rect_rejects_empty_sizes() {
+        assert_eq!(picture_content_rect(ContentFit::Contain, (0.0, 10.0), (10.0, 10.0)), None);
+        assert_eq!(picture_content_rect(ContentFit::Contain, (10.0, 10.0), (10.0, 0.0)), None);
+    }
+
+    #[test]
+    fn point_maps_through_letterbox_offset() {
+        // Click on the image's top-left corner lands on page (0, 0).
+        let p = widget_to_page_point(
+            ContentFit::Contain, (300.0, 500.0), (600.0, 500.0), (600.0, 500.0), (0.0, 125.0),
+        );
+        assert_eq!(p, Some((0.0, 0.0)));
+        // Image center -> page center.
+        let p = widget_to_page_point(
+            ContentFit::Contain, (300.0, 500.0), (600.0, 500.0), (600.0, 500.0), (150.0, 250.0),
+        );
+        assert_eq!(p, Some((300.0, 250.0)));
+        // Letterbox bar above the image maps above the page.
+        let p = widget_to_page_point(
+            ContentFit::Contain, (300.0, 500.0), (600.0, 500.0), (600.0, 500.0), (10.0, 50.0),
+        )
+        .unwrap();
+        assert!(p.1 < 0.0);
+    }
+
+    #[test]
+    fn point_maps_device_pixels_to_css_pixels() {
+        // DPR 2: 1200x1000 frame of a 600x500 CSS viewport shown 1:1 in a 600x500 widget.
+        let p = widget_to_page_point(
+            ContentFit::Contain, (600.0, 500.0), (1200.0, 1000.0), (600.0, 500.0), (100.0, 40.0),
+        );
+        assert_eq!(p, Some((100.0, 40.0)));
+    }
+
+    #[test]
+    fn point_maps_with_fill() {
+        let p = widget_to_page_point(
+            ContentFit::Fill, (300.0, 500.0), (600.0, 500.0), (600.0, 500.0), (150.0, 100.0),
+        );
+        assert_eq!(p, Some((300.0, 100.0)));
+    }
+
+    #[test]
+    fn frame_css_size_reads_metadata() {
+        let frame = serde_json::json!({
+            "type": "frame", "data": "",
+            "metadata": {"deviceWidth": 640, "deviceHeight": 480, "pageScaleFactor": 1.0}
+        });
+        assert_eq!(frame_css_size(&frame), Some((640.0, 480.0)));
+        assert_eq!(frame_css_size(&serde_json::json!({"type": "frame"})), None);
+    }
 }
