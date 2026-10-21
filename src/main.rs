@@ -395,6 +395,14 @@ fn build_ui(
     {
         let state = state.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            // Apply click-to-focus requested by a terminal's click handler
+            let clicked = crate::ghostty::callbacks::CLICK_FOCUS_GL_AREA
+                .swap(0, std::sync::atomic::Ordering::SeqCst);
+            if clicked != 0 {
+                if let Some(engine) = state.borrow_mut().active_split_engine_mut() {
+                    engine.activate_gl_area(clicked);
+                }
+            }
             // Process bell notifications
             if crate::ghostty::callbacks::BELL_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 let pane_id = crate::ghostty::callbacks::BELL_PANE_ID.load(std::sync::atomic::Ordering::SeqCst);

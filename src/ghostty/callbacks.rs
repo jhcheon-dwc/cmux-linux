@@ -36,6 +36,11 @@ pub static SURFACE_REGISTRY: LazyLock<Mutex<HashMap<usize, u64>>> =
 
 /// Phase 4: Pane ID that most recently received a bell. Read by wakeup_cb to update attention state.
 pub static BELL_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// GLArea pointer (as usize) of the terminal the user last clicked, or 0. Set by the
+/// click handler in surface.rs; the main-loop timer in main.rs makes it the active pane.
+pub static CLICK_FOCUS_GL_AREA: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 /// Phase 4: Flag indicating a bell is pending processing.
 pub static BELL_PENDING: AtomicBool = AtomicBool::new(false);
 

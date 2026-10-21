@@ -708,6 +708,16 @@ pub fn create_surface(
     click_gesture.connect_pressed({
         let cell = surface_cell.clone();
         move |gesture, _n_press, _x, _y| {
+            // Click-to-focus: GLArea does not take focus on its own, and the split
+            // engine's active pane must follow, or focus restoration (keyed on the
+            // active-pane CSS class) snaps focus back to the previous pane.
+            if let Some(widget) = gesture.widget() {
+                widget.grab_focus();
+                callbacks::CLICK_FOCUS_GL_AREA.store(
+                    widget.as_ptr() as usize,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }
             let surface = match *cell.borrow() {
                 Some(s) => s,
                 None => return,

@@ -969,30 +969,48 @@ impl SplitEngine {
 
     /// Navigate focus to the pane adjacent in `direction` (Ctrl+Alt+arrows per D-10).
     pub fn focus_next_in_direction(&mut self, direction: FocusDirection) -> bool {
-        let active_id = self.active_pane_id;
-        if let Some(new_id) = find_adjacent(&self.root, active_id, direction) {
-            // Unfocus old surface.
-            if let Some(old_surface) = self.find_surface(active_id) {
-                unsafe {
-                    ffi::ghostty_surface_set_focus(old_surface, false);
-                }
-            }
-            self.active_pane_id = new_id;
-            self.root.update_focus_css(new_id);
-            // Focus new surface or Preview URL entry.
-            if let Some(new_surface) = self.find_surface(new_id) {
-                unsafe {
-                    ffi::ghostty_surface_set_focus(new_surface, true);
-                }
-            }
-            if let Some(gl_area) = self.find_gl_area(new_id) {
-                gl_area.grab_focus();
-            } else if let Some(entry) = find_url_entry_in_tree(&self.root, new_id) {
-                entry.grab_focus();
-            }
+        if let Some(new_id) = find_adjacent(&self.root, self.active_pane_id, direction) {
+            self.set_active_pane(new_id);
             true
         } else {
             false
+        }
+    }
+
+    /// Make the leaf whose GLArea is `gl_area_ptr` the active pane (click-to-focus).
+    /// Looks the pane up by widget rather than pane_id, which is only unique
+    /// within one workspace. Returns false if the GLArea is not in this engine.
+    pub fn activate_gl_area(&mut self, gl_area_ptr: usize) -> bool {
+        let Some(pane_id) = find_pane_for_gl_area(&self.root, gl_area_ptr) else {
+            return false;
+        };
+        if pane_id != self.active_pane_id {
+            self.set_active_pane(pane_id);
+        }
+        true
+    }
+
+    /// Move the active pane to `new_id`: Ghostty focus, the active-pane CSS class
+    /// (which focus restoration after divider drags relies on) and GTK focus.
+    fn set_active_pane(&mut self, new_id: u64) {
+        // Unfocus old surface.
+        if let Some(old_surface) = self.find_surface(self.active_pane_id) {
+            unsafe {
+                ffi::ghostty_surface_set_focus(old_surface, false);
+            }
+        }
+        self.active_pane_id = new_id;
+        self.root.update_focus_css(new_id);
+        // Focus new surface or Preview URL entry.
+        if let Some(new_surface) = self.find_surface(new_id) {
+            unsafe {
+                ffi::ghostty_surface_set_focus(new_surface, true);
+            }
+        }
+        if let Some(gl_area) = self.find_gl_area(new_id) {
+            gl_area.grab_focus();
+        } else if let Some(entry) = find_url_entry_in_tree(&self.root, new_id) {
+            entry.grab_focus();
         }
     }
 
@@ -1226,6 +1244,16 @@ fn find_gl_area_in_tree(node: &SplitNode, pane_id: u64) -> Option<gtk4::GLArea> 
         SplitNode::Split { start, end, .. } => {
             find_gl_area_in_tree(start, pane_id).or_else(|| find_gl_area_in_tree(end, pane_id))
         }
+    }
+}
+
+fn find_pane_for_gl_area(node: &SplitNode, gl_area_ptr: usize) -> Option<u64> {
+    match node {
+        SplitNode::Leaf { pane_id, gl_area, .. }
+            if gl_area.as_ptr() as usize == gl_area_ptr => Some(*pane_id),
+        SplitNode::Leaf { .. } | SplitNode::Preview { .. } => None,
+        SplitNode::Split { start, end, .. } => find_pane_for_gl_area(start, gl_area_ptr)
+            .or_else(|| find_pane_for_gl_area(end, gl_area_ptr)),
     }
 }
 
