@@ -298,6 +298,8 @@ pub struct SplitEngine {
     app: gtk4::Application,
     /// Ghostty app handle needed to create new surfaces.
     ghostty_app: ffi::ghostty_app_t,
+    /// Previously active panes, for "focus previous pane" (pane-nav).
+    focus_history: FocusHistory,
 }
 
 impl SplitEngine {
@@ -330,7 +332,17 @@ impl SplitEngine {
             next_pane_id: pane_id + 1,
             app,
             ghostty_app,
+            focus_history: FocusHistory::default(),
         }
+    }
+
+    /// Replace the UUID of the initial (root) leaf. Used when the caller already
+    /// tagged the pane's surface with a UUID (see `local_pane_config`).
+    pub fn with_root_uuid(mut self, new_uuid: Uuid) -> Self {
+        if let SplitNode::Leaf { uuid, .. } = &mut self.root {
+            *uuid = new_uuid;
+        }
+        self
     }
 
     /// Update the surface pointer for a leaf after realize.
@@ -380,6 +392,7 @@ impl SplitEngine {
             next_pane_id,
             app,
             ghostty_app,
+            focus_history: FocusHistory::default(),
         })
     }
 
@@ -398,13 +411,16 @@ impl SplitEngine {
             SplitNodeData::Leaf { surface_uuid, .. } => {
                 let pane_id = *next_pane_id;
                 *next_pane_id += 1;
+                // D-06: preserve UUID from session. Preview panes are saved as
+                // nil-UUID leaves; give those a fresh one so restored panes never
+                // share an identity (or a CMUX_SURFACE_ID).
+                let uuid = if surface_uuid.is_nil() { Uuid::new_v4() } else { *surface_uuid };
                 // Create surface — realize callback will create Ghostty surface and wire registries
+                let config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW, uuid);
                 let (gl_area, _surface_cell) =
-                    crate::ghostty::surface::create_surface(app, ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+                    crate::ghostty::surface::create_surface(app, ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
                 // Phase 9: Attach right-click context menu (D-08)
                 attach_terminal_context_menu(&gl_area);
-                // D-06: preserve UUID from session
-                let uuid = *surface_uuid;
                 let surface_placeholder: ffi::ghostty_surface_t = std::ptr::null_mut();
                 Some(SplitNode::Leaf {
                     pane_id,
@@ -586,12 +602,13 @@ impl SplitEngine {
         // Get inherited config from the active surface (for CWD inheritance per D-08).
         // Pass by value (ghostty_surface_config_s is Copy) — avoids dangling pointer
         // in the GLArea realize callback, which fires asynchronously after this returns.
-        let inherited_config = unsafe {
-            ffi::ghostty_surface_inherited_config(
-                inherited_surface,
-                ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_SPLIT,
-            )
-        };
+        let new_uuid = Uuid::new_v4();
+        let active_uuid = self.root.find_uuid_for_pane(active_id);
+        let inherited_config = local_pane_config(
+            Some((inherited_surface, active_uuid)),
+            ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_SPLIT,
+            new_uuid,
+        );
 
         // Create new GLArea + surface for the new pane.
         eprintln!(
@@ -614,7 +631,7 @@ impl SplitEngine {
             pane_id: new_pane_id,
             gl_area: new_gl_area.clone(),
             surface: new_surface_placeholder, // updated after realize via SURFACE_REGISTRY
-            uuid: Uuid::new_v4(),
+            uuid: new_uuid,
             has_attention: false,
         };
 
@@ -629,6 +646,7 @@ impl SplitEngine {
         }
 
         // After realize, update active focus to the new pane.
+        self.focus_history.record(active_id, new_pane_id);
         self.active_pane_id = new_pane_id;
         self.root.update_focus_css(new_pane_id);
 
@@ -940,6 +958,8 @@ impl SplitEngine {
         }
 
         // Update focus to the surviving pane.
+        self.focus_history.forget(active_id);
+        self.focus_history.forget(surviving_id);
         self.active_pane_id = surviving_id;
         self.root.update_focus_css(surviving_id);
 
@@ -1001,6 +1021,7 @@ impl SplitEngine {
     /// Move the active pane to `new_id`: Ghostty focus, the active-pane CSS class
     /// (which focus restoration after divider drags relies on) and GTK focus.
     fn set_active_pane(&mut self, new_id: u64) {
+        self.focus_history.record(self.active_pane_id, new_id);
         // Unfocus old surface.
         if let Some(old_surface) = self.find_surface(self.active_pane_id) {
             unsafe {
@@ -1020,6 +1041,82 @@ impl SplitEngine {
         } else if let Some(entry) = find_url_entry_in_tree(&self.root, new_id) {
             entry.grab_focus();
         }
+    }
+
+    // ── pane-nav ─────────────────────────────────────────────────────────────
+
+    /// Make `pane_id` the active pane (socket pane.focus / surface.focus).
+    /// Returns false if the pane is not in this engine. Re-focusing the already
+    /// active pane only re-grabs GTK focus: toggling Ghostty focus off and on
+    /// again would kill the cursor blink timer (see restore_active_pane_focus).
+    pub fn focus_pane(&mut self, pane_id: u64) -> bool {
+        if self.root.find_node(pane_id).is_none() {
+            return false;
+        }
+        if pane_id == self.active_pane_id {
+            self.grab_active_focus();
+        } else {
+            self.set_active_pane(pane_id);
+        }
+        true
+    }
+
+    /// Focus the `n`th (1-based) terminal pane in reading order.
+    /// Returns the focused pane_id, or None if there is no such pane.
+    pub fn focus_pane_number(&mut self, n: usize) -> Option<u64> {
+        let target = pane_for_number(&self.root, n)?;
+        self.focus_pane(target);
+        Some(target)
+    }
+
+    /// Jump back to the previously focused pane that still exists.
+    pub fn focus_last_pane(&mut self) -> Option<u64> {
+        let root = &self.root;
+        let target = self
+            .focus_history
+            .previous(|id| root.find_node(id).is_some())?;
+        self.focus_pane(target);
+        Some(target)
+    }
+
+    /// Move the divider of the nearest ancestor split along `direction`'s axis
+    /// by `fraction` of that split's size (Right/Down move it right/down).
+    /// Returns false when the active pane has no such ancestor.
+    pub fn resize_active(&mut self, direction: FocusDirection, fraction: f64) -> bool {
+        let horizontal = matches!(direction, FocusDirection::Left | FocusDirection::Right);
+        let Some(path) = nearest_split_along(&self.root, self.active_pane_id, horizontal) else {
+            return false;
+        };
+        let Some(SplitNode::Split { paned, .. }) = node_at_path(&self.root, &path) else {
+            return false;
+        };
+        let size = if horizontal { paned.width() } else { paned.height() };
+        if size <= 0 {
+            return false;
+        }
+        let forward = matches!(direction, FocusDirection::Right | FocusDirection::Down);
+        paned.set_position(resized_position(paned.position(), size, fraction, forward));
+        schedule_resize_recovery();
+        true
+    }
+
+    /// Set every divider so panes share space equally along each split's axis.
+    pub fn equalize(&mut self) {
+        if !matches!(self.root, SplitNode::Split { .. }) {
+            return;
+        }
+        equalize_node(&self.root);
+        schedule_resize_recovery();
+    }
+
+    /// The active pane's Ghostty surface and UUID, used as the source for
+    /// working-directory inheritance when opening a new workspace.
+    pub fn active_terminal_source(&self) -> Option<(ffi::ghostty_surface_t, Option<String>)> {
+        if !matches!(self.root.find_node(self.active_pane_id), Some(SplitNode::Leaf { .. })) {
+            return None;
+        }
+        let surface = self.find_surface(self.active_pane_id)?;
+        Some((surface, self.root.find_uuid_for_pane(self.active_pane_id)))
     }
 
     /// Update the surface pointer for a pane after its GLArea realize callback fires.
@@ -1365,6 +1462,12 @@ fn remove_widget_from_parent(widget: &gtk4::Widget) {
 /// so the guard `if cursor_c.state() != .active` sees `.active` and skips the
 /// restart. The cancel then completes, leaving the timer permanently dead.
 fn restore_active_pane_focus() {
+    resync_surfaces(true);
+}
+
+/// Body of restore_active_pane_focus. With `grab_focus` false it only re-syncs
+/// sizes and redraws, for programmatic divider moves that must not take focus.
+fn resync_surfaces(grab_focus: bool) {
     // Re-set size + refresh ALL surfaces to break the anti-flicker stall.
     if let Ok(areas) = crate::ghostty::callbacks::GL_AREA_REGISTRY.lock() {
         if let Ok(gl_to_surface) = crate::ghostty::callbacks::GL_TO_SURFACE.lock() {
@@ -1401,7 +1504,12 @@ fn restore_active_pane_focus() {
     }
 
     // Restore GTK keyboard focus to the active pane.
-    if let Ok(areas) = crate::ghostty::callbacks::GL_AREA_REGISTRY.lock() {
+    let areas = if grab_focus {
+        crate::ghostty::callbacks::GL_AREA_REGISTRY.lock().ok()
+    } else {
+        None
+    };
+    if let Some(areas) = areas {
         for area_ptr in areas.iter() {
             let area: gtk4::glib::translate::Borrowed<gtk4::GLArea> =
                 unsafe { gtk4::glib::translate::from_glib_borrow(area_ptr.0) };
@@ -1583,6 +1691,359 @@ impl SplitNode {
     }
 }
 
+// ── pane-nav: pure layout logic ──────────────────────────────────────────────
+//
+// Numbering, equalize weights, resize targets and focus history are kept free
+// of GTK so they can be unit tested on SplitNodeData trees.
+
+/// Which child of a split a tree path step descends into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Start,
+    End,
+}
+
+/// One node of a pane tree, abstracted over SplitNode and SplitNodeData.
+pub(crate) enum NodeShape<'a, T> {
+    Leaf { pane_id: u64, terminal: bool },
+    Split { horizontal: bool, start: &'a T, end: &'a T },
+}
+
+pub(crate) trait PaneTree: Sized {
+    fn shape(&self) -> NodeShape<'_, Self>;
+}
+
+impl PaneTree for SplitNode {
+    fn shape(&self) -> NodeShape<'_, Self> {
+        match self {
+            SplitNode::Leaf { pane_id, .. } => NodeShape::Leaf { pane_id: *pane_id, terminal: true },
+            SplitNode::Preview { pane_id, .. } => NodeShape::Leaf { pane_id: *pane_id, terminal: false },
+            SplitNode::Split { orientation, start, end, .. } => NodeShape::Split {
+                horizontal: *orientation == gtk4::Orientation::Horizontal,
+                start,
+                end,
+            },
+        }
+    }
+}
+
+impl PaneTree for SplitNodeData {
+    fn shape(&self) -> NodeShape<'_, Self> {
+        match self {
+            // Preview panes are serialized as nil-UUID leaves (see to_data).
+            SplitNodeData::Leaf { pane_id, surface_uuid, .. } => NodeShape::Leaf {
+                pane_id: *pane_id,
+                terminal: !surface_uuid.is_nil(),
+            },
+            SplitNodeData::Split { orientation, start, end, .. } => NodeShape::Split {
+                horizontal: orientation != "vertical",
+                start,
+                end,
+            },
+        }
+    }
+}
+
+/// Terminal panes in reading order: start (left/top) subtree before end.
+pub(crate) fn terminal_panes_in_order<T: PaneTree>(node: &T) -> Vec<u64> {
+    fn walk<T: PaneTree>(node: &T, out: &mut Vec<u64>) {
+        match node.shape() {
+            NodeShape::Leaf { pane_id, terminal } => {
+                if terminal {
+                    out.push(pane_id);
+                }
+            }
+            NodeShape::Split { start, end, .. } => {
+                walk(start, out);
+                walk(end, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
+}
+
+/// The pane_id of the `n`th (1-based) terminal pane in reading order.
+pub(crate) fn pane_for_number<T: PaneTree>(root: &T, n: usize) -> Option<u64> {
+    if n == 0 {
+        return None;
+    }
+    terminal_panes_in_order(root).get(n - 1).copied()
+}
+
+/// How many panes sit side by side along an axis (columns when `horizontal`,
+/// rows otherwise). A same-axis split adds its children's spans; a cross-axis
+/// split is as wide as its wider child.
+pub(crate) fn span_along<T: PaneTree>(node: &T, horizontal: bool) -> usize {
+    match node.shape() {
+        NodeShape::Leaf { .. } => 1,
+        NodeShape::Split { horizontal: h, start, end } => {
+            let (a, b) = (span_along(start, horizontal), span_along(end, horizontal));
+            if h == horizontal { a + b } else { a.max(b) }
+        }
+    }
+}
+
+/// Fraction of a split's space the start child gets when equalizing, so that
+/// every pane along the split's axis ends up the same size.
+pub(crate) fn equalize_fraction<T: PaneTree>(start: &T, end: &T, horizontal: bool) -> f64 {
+    let a = span_along(start, horizontal) as f64;
+    let b = span_along(end, horizontal) as f64;
+    a / (a + b)
+}
+
+/// Path from `node` to the leaf `pane_id`, appended to `path`.
+fn path_to_pane<T: PaneTree>(node: &T, pane_id: u64, path: &mut Vec<Side>) -> bool {
+    match node.shape() {
+        NodeShape::Leaf { pane_id: id, .. } => id == pane_id,
+        NodeShape::Split { start, end, .. } => {
+            path.push(Side::Start);
+            if path_to_pane(start, pane_id, path) {
+                return true;
+            }
+            path.pop();
+            path.push(Side::End);
+            if path_to_pane(end, pane_id, path) {
+                return true;
+            }
+            path.pop();
+            false
+        }
+    }
+}
+
+/// Path to the closest ancestor split of `pane_id` whose divider moves along
+/// the requested axis (`horizontal` = left/right).
+pub(crate) fn nearest_split_along<T: PaneTree>(root: &T, pane_id: u64, horizontal: bool) -> Option<Vec<Side>> {
+    let mut path = Vec::new();
+    if !path_to_pane(root, pane_id, &mut path) {
+        return None;
+    }
+    for depth in (0..path.len()).rev() {
+        let prefix = &path[..depth];
+        if let Some(NodeShape::Split { horizontal: h, .. }) = node_at_path(root, prefix).map(|n| n.shape()) {
+            if h == horizontal {
+                return Some(prefix.to_vec());
+            }
+        }
+    }
+    None
+}
+
+/// Follow `path` from `root`.
+pub(crate) fn node_at_path<'a, T: PaneTree>(root: &'a T, path: &[Side]) -> Option<&'a T> {
+    let mut node = root;
+    for side in path {
+        match node.shape() {
+            NodeShape::Split { start, end, .. } => {
+                node = if *side == Side::Start { start } else { end };
+            }
+            NodeShape::Leaf { .. } => return None,
+        }
+    }
+    Some(node)
+}
+
+/// New divider position after moving it by `fraction` of `size` (at least one
+/// pixel), forward (right/down) or backward, clamped to the split.
+pub(crate) fn resized_position(position: i32, size: i32, fraction: f64, forward: bool) -> i32 {
+    let delta = ((size as f64) * fraction).round().max(1.0) as i32;
+    let moved = if forward { position + delta } else { position - delta };
+    moved.clamp(0, size.max(0))
+}
+
+/// Previously active panes of one workspace, most recent last.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct FocusHistory {
+    stack: Vec<u64>,
+}
+
+const FOCUS_HISTORY_LEN: usize = 16;
+
+impl FocusHistory {
+    /// Record that focus moved from `old` to `new`. Each pane appears once,
+    /// so repeated "focus previous" toggles between two panes.
+    pub fn record(&mut self, old: u64, new: u64) {
+        if old == new {
+            return;
+        }
+        self.stack.retain(|&id| id != old && id != new);
+        self.stack.push(old);
+        if self.stack.len() > FOCUS_HISTORY_LEN {
+            self.stack.remove(0);
+        }
+    }
+
+    /// Drop a pane (closed, or now active) from the history.
+    pub fn forget(&mut self, pane_id: u64) {
+        self.stack.retain(|&id| id != pane_id);
+    }
+
+    /// The most recently active pane for which `exists` holds.
+    pub fn previous(&self, exists: impl Fn(u64) -> bool) -> Option<u64> {
+        self.stack.iter().rev().copied().find(|&id| exists(id))
+    }
+}
+
+// ── pane-nav: GTK side of resize / equalize ─────────────────────────────────
+
+/// Set every divider in `node` to its equal-share position.
+///
+/// Positions are computed against each Paned's *current* allocation, even for
+/// nested Paneds about to be resized by their parent: when a Paned whose
+/// position was set is re-allocated, GTK scales the position by
+/// new/old size (both children resize), so the share is preserved.
+fn equalize_node(node: &SplitNode) {
+    let SplitNode::Split { orientation, paned, start, end } = node else {
+        return;
+    };
+    let horizontal = *orientation == gtk4::Orientation::Horizontal;
+    let (size, start_size, end_size) = if horizontal {
+        (paned.width(), start.widget().width(), end.widget().width())
+    } else {
+        (paned.height(), start.widget().height(), end.widget().height())
+    };
+    // Space shared by the children: the Paned minus its handle.
+    let avail = start_size + end_size;
+    if size > 0 && avail > 0 {
+        let fraction = equalize_fraction(start.as_ref(), end.as_ref(), horizontal);
+        paned.set_position(((avail as f64) * fraction).round() as i32);
+    }
+    equalize_node(start);
+    equalize_node(end);
+}
+
+/// After a programmatic divider move, re-sync surface sizes once layout has
+/// settled: the recovery a mouse drag gets on drag-end, minus the focus grab
+/// (pane.resize / pane.equalize must not move focus).
+fn schedule_resize_recovery() {
+    gtk4::glib::idle_add_local_once(|| resync_surfaces(false));
+}
+
+// ── pane-nav: working-directory inheritance ─────────────────────────────────
+
+/// Environment variable carrying a pane's UUID into its shell (same name as
+/// cmux on macOS). Used to find a pane's shell in /proc and read its cwd.
+const SURFACE_ID_ENV: &str = "CMUX_SURFACE_ID";
+const SURFACE_ID_ENV_C: &std::ffi::CStr = c"CMUX_SURFACE_ID";
+
+/// Leak a C string for a Ghostty surface config. The config is consumed at
+/// GLArea realize time, after the caller returns, and Ghostty copies what it
+/// keeps, so these few bytes per pane are never reclaimed.
+fn leak_c_string(s: &str) -> *const std::os::raw::c_char {
+    match std::ffi::CString::new(s) {
+        Ok(c) => c.into_raw(),
+        Err(_) => std::ptr::null(),
+    }
+}
+
+/// Surface config for a new local terminal pane with UUID `new_uuid`.
+/// When `source` (the pane it is opened from, plus its UUID) is given, the new
+/// pane starts in the source's working directory: Ghostty's own value (learned
+/// from OSC 7) if it names a local directory, else the cwd of the source
+/// pane's shell read from /proc.
+pub(crate) fn local_pane_config(
+    source: Option<(ffi::ghostty_surface_t, Option<String>)>,
+    context: ffi::ghostty_surface_context_e,
+    new_uuid: Uuid,
+) -> ffi::ghostty_surface_config_s {
+    let mut config = unsafe { ffi::ghostty_surface_config_new() };
+    if let Some((surface, source_uuid)) = source.filter(|(s, _)| !s.is_null()) {
+        let inherited = unsafe { ffi::ghostty_surface_inherited_config(surface, context) };
+        if context == ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_SPLIT {
+            // Splits keep the full inherited config (font size etc.), as before.
+            config = inherited;
+        }
+        // An SSH pane (manual I/O) reports remote paths; never apply them locally.
+        let remote = inherited.io_mode == ffi::ghostty_surface_io_mode_e_GHOSTTY_SURFACE_IO_MANUAL;
+        let ghostty_wd = if remote || inherited.working_directory.is_null() {
+            None
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(inherited.working_directory) }
+                .to_str()
+                .ok()
+                .map(str::to_string)
+        };
+        let wd = ghostty_wd
+            .filter(|d| std::path::Path::new(d).is_dir())
+            .or_else(|| source_uuid.as_deref().filter(|_| !remote).and_then(shell_cwd_for_pane));
+        config.working_directory = wd.as_deref().map(leak_c_string).unwrap_or(std::ptr::null());
+    }
+    config.context = context;
+    let env = Box::new(ffi::ghostty_env_var_s {
+        key: SURFACE_ID_ENV_C.as_ptr(),
+        value: leak_c_string(&new_uuid.to_string()),
+    });
+    config.env_vars = Box::into_raw(env);
+    config.env_var_count = 1;
+    config
+}
+
+/// Field `index` after the command name in /proc/{pid}/stat
+/// ("pid (comm) state ppid pgrp session tty_nr tpgid ..."; state is 0).
+fn proc_stat_field(pid: u32, index: usize) -> Option<i64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rfind(')')?;
+    stat.get(after_comm + 2..)?.split_whitespace().nth(index)?.parse().ok()
+}
+
+/// Direct children of `pid`, from /proc/{pid}/task/*/children (each thread
+/// lists the children it forked).
+fn child_pids(pid: u32) -> Vec<u32> {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return Vec::new();
+    };
+    tasks
+        .flatten()
+        .filter_map(|task| std::fs::read_to_string(task.path().join("children")).ok())
+        .flat_map(|list| {
+            list.split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect::<Vec<u32>>()
+        })
+        .collect()
+}
+
+/// The CMUX_SURFACE_ID a process was started with, if any.
+fn surface_id_of(pid: u32) -> Option<String> {
+    let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let prefix = format!("{SURFACE_ID_ENV}=");
+    env.split(|&b| b == 0)
+        .find_map(|var| var.strip_prefix(prefix.as_bytes()))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+}
+
+fn proc_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Working directory of the pane tagged `pane_uuid`. Finds the top-most
+/// descendant of this process carrying CMUX_SURFACE_ID=<uuid> (Ghostty may
+/// wrap the shell in `/bin/sh -c`), then, like kitty, prefers the terminal's
+/// foreground process group: the interactive shell itself when it is idle.
+fn shell_cwd_for_pane(pane_uuid: &str) -> Option<String> {
+    // Breadth-first over our descendants only, not descending into other
+    // panes' process trees. A pane's shell is a direct child (or a grandchild
+    // behind Ghostty's `sh -c`), so this stops early.
+    let mut queue: std::collections::VecDeque<u32> = child_pids(std::process::id()).into();
+    while let Some(pid) = queue.pop_front() {
+        match surface_id_of(pid) {
+            Some(id) if id == pane_uuid => {
+                let foreground = proc_stat_field(pid, 5)
+                    .and_then(|tpgid| u32::try_from(tpgid).ok())
+                    .filter(|&fg| fg > 0 && surface_id_of(fg).as_deref() == Some(pane_uuid));
+                return foreground.and_then(proc_cwd).or_else(|| proc_cwd(pid));
+            }
+            Some(_) => {}
+            None => queue.extend(child_pids(pid)),
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1664,5 +2125,145 @@ mod tests {
         } else {
             panic!("v1 deserialize changed variant");
         }
+    }
+
+    // ── pane-nav ────────────────────────────────────────────────────────────
+
+    fn leaf(id: u64) -> SplitNodeData {
+        SplitNodeData::Leaf {
+            pane_id: id,
+            surface_uuid: Uuid::new_v4(),
+            shell: String::new(),
+            cwd: String::new(),
+        }
+    }
+
+    fn preview(id: u64) -> SplitNodeData {
+        SplitNodeData::Leaf {
+            pane_id: id,
+            surface_uuid: Uuid::nil(),
+            shell: String::new(),
+            cwd: String::new(),
+        }
+    }
+
+    fn node(orientation: &str, start: SplitNodeData, end: SplitNodeData) -> SplitNodeData {
+        SplitNodeData::Split {
+            orientation: orientation.to_string(),
+            ratio: 0.5,
+            start: Box::new(start),
+            end: Box::new(end),
+        }
+    }
+
+    /// ┌───┬───┐
+    /// │ 1 │ 2 │
+    /// │   ├───┤
+    /// │   │ 3 │
+    /// ├───┴───┤
+    /// │   4   │
+    /// └───────┘
+    fn sample_tree() -> SplitNodeData {
+        node(
+            "vertical",
+            node("horizontal", leaf(1), node("vertical", leaf(2), leaf(3))),
+            leaf(4),
+        )
+    }
+
+    #[test]
+    fn pane_numbers_follow_reading_order() {
+        let tree = sample_tree();
+        assert_eq!(terminal_panes_in_order(&tree), vec![1, 2, 3, 4]);
+        assert_eq!(pane_for_number(&tree, 1), Some(1));
+        assert_eq!(pane_for_number(&tree, 3), Some(3));
+        assert_eq!(pane_for_number(&tree, 4), Some(4));
+        assert_eq!(pane_for_number(&tree, 5), None);
+        assert_eq!(pane_for_number(&tree, 0), None);
+        // A single pane is pane 1.
+        assert_eq!(pane_for_number(&leaf(7), 1), Some(7));
+    }
+
+    #[test]
+    fn pane_numbers_skip_browser_previews() {
+        let tree = node("horizontal", leaf(1), node("horizontal", preview(2), leaf(3)));
+        assert_eq!(terminal_panes_in_order(&tree), vec![1, 3]);
+        assert_eq!(pane_for_number(&tree, 2), Some(3));
+    }
+
+    #[test]
+    fn equalize_weights_count_panes_along_the_axis() {
+        // Three columns made of nested horizontal splits: 1/3 then 1/2.
+        let (a, b) = (leaf(1), node("horizontal", leaf(2), leaf(3)));
+        assert!((equalize_fraction(&a, &b, true) - 1.0 / 3.0).abs() < 1e-9);
+        // A cross-axis subtree counts as one column, however many rows it has.
+        let (a, b) = (leaf(1), node("vertical", leaf(2), leaf(3)));
+        assert!((equalize_fraction(&a, &b, true) - 0.5).abs() < 1e-9);
+        // Two columns on each side of the root split: 50/50.
+        let a = node("horizontal", leaf(1), leaf(2));
+        let b = node("vertical", node("horizontal", leaf(3), leaf(4)), leaf(5));
+        assert_eq!(span_along(&b, true), 2);
+        assert_eq!(span_along(&b, false), 2);
+        assert!((equalize_fraction(&a, &b, true) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resize_targets_nearest_split_on_the_axis() {
+        let tree = sample_tree();
+        // Pane 3: nearest up/down split is its parent [Start, End];
+        // nearest left/right split is [Start].
+        assert_eq!(
+            nearest_split_along(&tree, 3, false),
+            Some(vec![Side::Start, Side::End])
+        );
+        assert_eq!(nearest_split_along(&tree, 3, true), Some(vec![Side::Start]));
+        // Pane 4 has no left/right divider; up/down moves the root divider.
+        assert_eq!(nearest_split_along(&tree, 4, true), None);
+        assert_eq!(nearest_split_along(&tree, 4, false), Some(vec![]));
+        // Unknown pane.
+        assert_eq!(nearest_split_along(&tree, 99, true), None);
+        // node_at_path resolves the returned path to that split.
+        let found = node_at_path(&tree, &[Side::Start, Side::End]).unwrap();
+        assert!(matches!(found, SplitNodeData::Split { orientation, .. } if orientation == "vertical"));
+    }
+
+    #[test]
+    fn resized_position_moves_and_clamps() {
+        assert_eq!(resized_position(500, 1000, 0.05, true), 550);
+        assert_eq!(resized_position(500, 1000, 0.05, false), 450);
+        assert_eq!(resized_position(990, 1000, 0.05, true), 1000);
+        assert_eq!(resized_position(10, 1000, 0.05, false), 0);
+        // Tiny fractions still move by at least one pixel.
+        assert_eq!(resized_position(10, 100, 0.001, true), 11);
+    }
+
+    #[test]
+    fn focus_history_toggles_and_forgets() {
+        let mut h = FocusHistory::default();
+        let all = |_: u64| true;
+        assert_eq!(h.previous(all), None);
+        h.record(1, 2); // 1 -> 2
+        assert_eq!(h.previous(all), Some(1));
+        h.record(2, 1); // "focus previous" back to 1
+        assert_eq!(h.previous(all), Some(2));
+        h.record(1, 3); // 1 -> 3
+        assert_eq!(h.previous(all), Some(1));
+        h.record(3, 3); // no-op
+        assert_eq!(h.previous(all), Some(1));
+        // Panes that no longer exist are skipped, and can be forgotten.
+        assert_eq!(h.previous(|id| id != 1), Some(2));
+        h.forget(1);
+        assert_eq!(h.previous(all), Some(2));
+    }
+
+    #[test]
+    fn focus_history_is_bounded() {
+        let mut h = FocusHistory::default();
+        for id in 0..100u64 {
+            h.record(id, id + 1);
+        }
+        assert_eq!(h.previous(|_| true), Some(99));
+        assert!(h.stack.len() <= FOCUS_HISTORY_LEN);
+        assert!(!h.stack.contains(&0));
     }
 }

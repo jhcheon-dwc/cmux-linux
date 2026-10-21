@@ -108,15 +108,23 @@ impl AppState {
             "cmux: create_workspace calling create_surface for workspace_id={}, pane_id={}",
             id, pane_id
         );
+        // pane-nav: start in the focused terminal's working directory.
+        let pane_uuid = uuid::Uuid::new_v4();
+        let config = crate::split_engine::local_pane_config(
+            self.active_split_engine().and_then(|e| e.active_terminal_source()),
+            crate::ghostty::ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_TAB,
+            pane_uuid,
+        );
         let (gl_area, surface_cell) =
-            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, None, pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
+            crate::ghostty::surface::create_surface(&self.gtk_app, self.ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec);
         let engine = SplitEngine::new(
             self.gtk_app.clone(),
             self.ghostty_app,
             gl_area.clone(),
             surface_cell,
             pane_id,
-        );
+        )
+        .with_root_uuid(pane_uuid);
 
         // Add to stack
         let page_name = format!("workspace-{}", id);

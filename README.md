@@ -78,6 +78,44 @@ contrib/wsl/setup.sh
 - **PowerToys로 한/영키를 리매핑하지 마세요.** 앱 단위 지정이 안 돼서 Windows 전체의 한/영 전환이 막힙니다. AutoHotkey 스크립트를 쓰세요.
 - 패키지 버전은 원본과 같은 `0.1.0`이라 `dpkg` 정보로는 원본과 구분되지 않습니다.
 
+## 단축키
+
+실제 기본값입니다(`src/config.rs`). 아래 원본 README의 단축키 표는 실제와 다릅니다. 메뉴와 도움말 창(햄버거 메뉴 → Keyboard Shortcuts)에는 설정을 반영한 현재 단축키가 표시됩니다.
+
+| 단축키 | 동작 | `[shortcuts]` 키 |
+|---|---|---|
+| `Ctrl+N` | 새 워크스페이스 (현재 터미널의 작업 디렉터리에서 시작) | `new_workspace` |
+| `Ctrl+Shift+W` | 워크스페이스 닫기 | `close_workspace` |
+| `Ctrl+]` / `Ctrl+[` | 다음 / 이전 워크스페이스 | `next_workspace` / `prev_workspace` |
+| `Ctrl+Shift+R` | 워크스페이스 이름 바꾸기 | `rename_workspace` |
+| `Ctrl+1`~`9` | N번째 워크스페이스로 이동 | `workspace_1`~`workspace_9` |
+| `Ctrl+B` | 사이드바 보이기/숨기기 | `toggle_sidebar` |
+| `Ctrl+D` | 오른쪽으로 분할 (현재 창의 작업 디렉터리에서 시작) | `split_right` |
+| `Ctrl+Shift+D` | 아래로 분할 (현재 창의 작업 디렉터리에서 시작) | `split_down` |
+| `Ctrl+Shift+X` | 창(pane) 닫기 | `close_pane` |
+| `Ctrl+Shift+←/→/↑/↓` | 이전 / 다음 창으로 포커스 (트리 순서 기준) | `focus_left` / `focus_right` / `focus_up` / `focus_down` |
+| `Ctrl+Alt+1`~`9` | N번째 창으로 포커스 (왼쪽→오른쪽, 위→아래 순서) | `focus_pane_1`~`focus_pane_9` |
+| ``Ctrl+Alt+` `` | 직전에 포커스했던 창으로 돌아가기 | `focus_last_pane` |
+| `Ctrl+Alt+Shift+←/→/↑/↓` | 현재 창에 가장 가까운 분할선을 그 방향으로 5% 이동 | `resize_left` / `resize_right` / `resize_up` / `resize_down` |
+| `Ctrl+Alt+=` | 모든 분할을 같은 크기로 | `equalize_splits` |
+| `Ctrl+Shift+S` | SSH 워크스페이스 | `new_ssh_workspace` |
+| `Ctrl+Shift+B` / `Ctrl+Shift+Q` | 브라우저 미리보기 열기 / 닫기 | `browser_open` / `browser_close` |
+| `Ctrl+Shift+C` / `Ctrl+Shift+V` | 복사 / 붙여넣기 | (변경 불가) |
+| `Ctrl+Q` | 종료 | (변경 불가) |
+
+바꾸려면 `~/.config/cmux/config.toml`에 GTK 가속기 형식으로 적고 cmux를 다시 시작합니다. 잘못된 값은 경고 후 기본값을 씁니다.
+
+```toml
+[shortcuts]
+focus_last_pane = "<Ctrl><Alt>Tab"
+resize_left = "<Ctrl><Alt><Shift>h"
+equalize_splits = "<Ctrl><Alt>0"
+```
+
+- 새 창/워크스페이스의 작업 디렉터리는 셸이 OSC 7로 알린 경로를 먼저 쓰고, 없으면 원래 창 셸의 현재 디렉터리(`/proc`)를 씁니다. 이를 위해 cmux가 띄운 셸에는 `CMUX_SURFACE_ID`(창 UUID) 환경변수가 붙습니다.
+- GNOME 등 일부 데스크톱은 `Ctrl+Alt+Shift+방향키`를 작업 공간 이동에 씁니다. 그런 환경에서는 위처럼 다른 키로 바꾸세요.
+- 같은 동작은 소켓 CLI로도 할 수 있습니다: `cmux focus-pane-number 2`, `cmux last-pane`, `cmux resize-pane left --amount 0.1`, `cmux equalize-panes`.
+
 ## 알려진 제한
 
 - 가로 탭이 없습니다. 왼쪽 사이드바의 워크스페이스가 탭 역할을 합니다(`Ctrl+N` 새로 만들기, `Ctrl+1`~`9` 이동).
@@ -233,6 +271,8 @@ export GTK_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
 The input method daemon must be running and have an engine selected (for ibus, `ibus engine` prints the active engine).
 
 ## Keyboard Shortcuts
+
+> **Fork note:** this table does not match the actual defaults. See the [단축키](#단축키) table in the fork section at the top.
 
 | Shortcut | Action |
 |----------|--------|

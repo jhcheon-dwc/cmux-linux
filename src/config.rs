@@ -41,6 +41,22 @@ pub struct ShortcutConfig {
     pub workspace_9: Option<String>,
     pub browser_open: Option<String>,
     pub browser_close: Option<String>,
+    // pane-nav
+    pub focus_pane_1: Option<String>,
+    pub focus_pane_2: Option<String>,
+    pub focus_pane_3: Option<String>,
+    pub focus_pane_4: Option<String>,
+    pub focus_pane_5: Option<String>,
+    pub focus_pane_6: Option<String>,
+    pub focus_pane_7: Option<String>,
+    pub focus_pane_8: Option<String>,
+    pub focus_pane_9: Option<String>,
+    pub focus_last_pane: Option<String>,
+    pub resize_left: Option<String>,
+    pub resize_right: Option<String>,
+    pub resize_up: Option<String>,
+    pub resize_down: Option<String>,
+    pub equalize_splits: Option<String>,
 }
 
 /// UI configuration section -- [ui] in config.toml (D-16).
@@ -105,11 +121,31 @@ pub enum ShortcutAction {
     Workspace9,
     BrowserOpen,
     BrowserClose,
+    // pane-nav
+    FocusPane1,
+    FocusPane2,
+    FocusPane3,
+    FocusPane4,
+    FocusPane5,
+    FocusPane6,
+    FocusPane7,
+    FocusPane8,
+    FocusPane9,
+    FocusLastPane,
+    ResizeLeft,
+    ResizeRight,
+    ResizeUp,
+    ResizeDown,
+    EqualizeSplits,
 }
 
 /// HashMap-based shortcut lookup table built from config + defaults.
+#[derive(Clone)]
 pub struct ShortcutMap {
     map: HashMap<(ModifierType, Key), ShortcutAction>,
+    /// Effective accelerator string per action, in declaration order. Menus and
+    /// the shortcuts window are generated from this so overrides show up there.
+    accels: Vec<(ShortcutAction, String)>,
 }
 
 /// Known shortcut action names for unknown-key detection.
@@ -120,6 +156,11 @@ const KNOWN_SHORTCUTS: &[&str] = &[
     "workspace_1", "workspace_2", "workspace_3", "workspace_4",
     "workspace_5", "workspace_6", "workspace_7", "workspace_8", "workspace_9",
     "browser_open", "browser_close",
+    // pane-nav
+    "focus_pane_1", "focus_pane_2", "focus_pane_3", "focus_pane_4", "focus_pane_5",
+    "focus_pane_6", "focus_pane_7", "focus_pane_8", "focus_pane_9",
+    "focus_last_pane", "resize_left", "resize_right", "resize_up", "resize_down",
+    "equalize_splits",
 ];
 
 /// Modifier mask for lookup: ignore Caps Lock, Num Lock, etc.
@@ -167,17 +208,28 @@ pub fn load_config() -> Config {
 
 /// Warn about unknown keys in the [shortcuts] table (D-03).
 fn warn_unknown_shortcuts(content: &str) {
+    for key in unknown_shortcut_keys(content) {
+        eprintln!("cmux: unknown shortcut action '{}' in config, ignoring", key);
+    }
+}
+
+/// Keys of the [shortcuts] table that are not known actions.
+fn unknown_shortcut_keys(content: &str) -> Vec<String> {
     let table: toml::Value = match content.parse() {
         Ok(v) => v,
-        Err(_) => return, // Parse errors are reported by load_config
+        Err(_) => return Vec::new(), // Parse errors are reported by load_config
     };
-    if let Some(shortcuts) = table.get("shortcuts").and_then(|v| v.as_table()) {
-        for key in shortcuts.keys() {
-            if !KNOWN_SHORTCUTS.contains(&key.as_str()) {
-                eprintln!("cmux: unknown shortcut action '{}' in config, ignoring", key);
-            }
-        }
-    }
+    table
+        .get("shortcuts")
+        .and_then(|v| v.as_table())
+        .map(|shortcuts| {
+            shortcuts
+                .keys()
+                .filter(|key| !KNOWN_SHORTCUTS.contains(&key.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl ShortcutMap {
@@ -209,9 +261,26 @@ impl ShortcutMap {
             (ShortcutAction::Workspace9,      &config.workspace_9,      "<Ctrl>9"),
             (ShortcutAction::BrowserOpen,     &config.browser_open,     "<Ctrl><Shift>b"),
             (ShortcutAction::BrowserClose,    &config.browser_close,    "<Ctrl><Shift>q"),
+            // pane-nav
+            (ShortcutAction::FocusPane1,      &config.focus_pane_1,     "<Ctrl><Alt>1"),
+            (ShortcutAction::FocusPane2,      &config.focus_pane_2,     "<Ctrl><Alt>2"),
+            (ShortcutAction::FocusPane3,      &config.focus_pane_3,     "<Ctrl><Alt>3"),
+            (ShortcutAction::FocusPane4,      &config.focus_pane_4,     "<Ctrl><Alt>4"),
+            (ShortcutAction::FocusPane5,      &config.focus_pane_5,     "<Ctrl><Alt>5"),
+            (ShortcutAction::FocusPane6,      &config.focus_pane_6,     "<Ctrl><Alt>6"),
+            (ShortcutAction::FocusPane7,      &config.focus_pane_7,     "<Ctrl><Alt>7"),
+            (ShortcutAction::FocusPane8,      &config.focus_pane_8,     "<Ctrl><Alt>8"),
+            (ShortcutAction::FocusPane9,      &config.focus_pane_9,     "<Ctrl><Alt>9"),
+            (ShortcutAction::FocusLastPane,   &config.focus_last_pane,  "<Ctrl><Alt>grave"),
+            (ShortcutAction::ResizeLeft,      &config.resize_left,      "<Ctrl><Alt><Shift>Left"),
+            (ShortcutAction::ResizeRight,     &config.resize_right,     "<Ctrl><Alt><Shift>Right"),
+            (ShortcutAction::ResizeUp,        &config.resize_up,        "<Ctrl><Alt><Shift>Up"),
+            (ShortcutAction::ResizeDown,      &config.resize_down,      "<Ctrl><Alt><Shift>Down"),
+            (ShortcutAction::EqualizeSplits,  &config.equalize_splits,  "<Ctrl><Alt>equal"),
         ];
 
         let mut map = HashMap::new();
+        let mut accels = Vec::with_capacity(entries.len());
 
         for (action, config_val, default_accel) in entries {
             let accel_str = config_val.as_deref().unwrap_or(*default_accel);
@@ -219,6 +288,7 @@ impl ShortcutMap {
 
             if let Some((key, mods)) = gtk4::accelerator_parse(accel_str) {
                 map.insert((mods & MOD_MASK, key), *action);
+                accels.push((*action, accel_str.to_string()));
             } else {
                 // D-11: invalid accelerator — warn and use default
                 eprintln!(
@@ -228,10 +298,19 @@ impl ShortcutMap {
                 if let Some((key, mods)) = gtk4::accelerator_parse(*default_accel) {
                     map.insert((mods & MOD_MASK, key), *action);
                 }
+                accels.push((*action, default_accel.to_string()));
             }
         }
 
-        ShortcutMap { map }
+        ShortcutMap { map, accels }
+    }
+
+    /// The effective accelerator string (GTK syntax) bound to `action`.
+    pub fn accel(&self, action: ShortcutAction) -> Option<&str> {
+        self.accels
+            .iter()
+            .find(|(a, _)| *a == action)
+            .map(|(_, s)| s.as_str())
     }
 
     /// Look up a shortcut action for the given modifier+key combination.
@@ -338,32 +417,133 @@ buttons_right = ["split_right", "toggle_sidebar"]
     // Tests that require GTK4 initialization (accelerator_parse).
     // These will only work in environments with a display (or virtual display).
 
+    /// Run `f` on the one thread that initialized GTK. GTK may only be used from
+    /// the thread that initialized it, and libtest runs every test on its own
+    /// thread, so without this only the first GTK test to run would get GTK.
+    /// Skips (returns) when GTK cannot be initialized.
+    fn on_gtk_thread(name: &str, f: impl FnOnce() + Send + 'static) {
+        use std::sync::{mpsc, Mutex, OnceLock};
+        type Job = Box<dyn FnOnce() + Send>;
+        type Done = mpsc::Sender<Option<std::thread::Result<()>>>;
+        static GTK_THREAD: OnceLock<Mutex<mpsc::Sender<(Job, Done)>>> = OnceLock::new();
+        let jobs = GTK_THREAD.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<(Job, Done)>();
+            std::thread::spawn(move || {
+                let gtk_ok = gtk4::init().is_ok();
+                for (job, done) in rx {
+                    let result = gtk_ok.then(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)));
+                    let _ = done.send(result);
+                }
+            });
+            Mutex::new(tx)
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        jobs.lock().unwrap().send((Box::new(f), done_tx)).unwrap();
+        match done_rx.recv().unwrap() {
+            None => eprintln!("Skipping {name}: GTK4 init failed (headless)"),
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            Some(Ok(())) => {}
+        }
+    }
+
     #[test]
     fn test_shortcut_map_defaults() {
-        if gtk4::init().is_err() {
-            eprintln!("Skipping test_shortcut_map_defaults: GTK4 init failed (headless)");
-            return;
-        }
-        let smap = ShortcutMap::from_config(&ShortcutConfig::default());
-        // Ctrl+N should map to NewWorkspace
-        let result = smap.lookup(ModifierType::CONTROL_MASK, Key::n);
-        assert_eq!(result, Some(ShortcutAction::NewWorkspace));
+        on_gtk_thread("test_shortcut_map_defaults", || {
+            let smap = ShortcutMap::from_config(&ShortcutConfig::default());
+            // Ctrl+N should map to NewWorkspace
+            let result = smap.lookup(ModifierType::CONTROL_MASK, Key::n);
+            assert_eq!(result, Some(ShortcutAction::NewWorkspace));
+        });
     }
 
     #[test]
     fn test_shortcut_map_custom() {
-        if gtk4::init().is_err() {
-            eprintln!("Skipping test_shortcut_map_custom: GTK4 init failed (headless)");
-            return;
-        }
-        let config = ShortcutConfig {
-            new_workspace: Some("<Ctrl>t".to_string()),
-            ..Default::default()
-        };
-        let smap = ShortcutMap::from_config(&config);
-        // Ctrl+T should now map to NewWorkspace
-        assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::t), Some(ShortcutAction::NewWorkspace));
-        // Ctrl+N should no longer map to NewWorkspace
-        assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::n), None);
+        on_gtk_thread("test_shortcut_map_custom", || {
+            let config = ShortcutConfig {
+                new_workspace: Some("<Ctrl>t".to_string()),
+                ..Default::default()
+            };
+            let smap = ShortcutMap::from_config(&config);
+            // Ctrl+T should now map to NewWorkspace
+            assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::t), Some(ShortcutAction::NewWorkspace));
+            // Ctrl+N should no longer map to NewWorkspace
+            assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::n), None);
+        });
+    }
+
+    // pane-nav
+    #[test]
+    fn test_shortcut_map_pane_nav_defaults() {
+        on_gtk_thread("test_shortcut_map_pane_nav_defaults", || {
+            let smap = ShortcutMap::from_config(&ShortcutConfig::default());
+            let ca = ModifierType::CONTROL_MASK | ModifierType::ALT_MASK;
+            assert_eq!(smap.lookup(ca, Key::_1), Some(ShortcutAction::FocusPane1));
+            assert_eq!(smap.lookup(ca, Key::_9), Some(ShortcutAction::FocusPane9));
+            assert_eq!(smap.lookup(ca, Key::grave), Some(ShortcutAction::FocusLastPane));
+            assert_eq!(smap.lookup(ca, Key::equal), Some(ShortcutAction::EqualizeSplits));
+            let cas = ca | ModifierType::SHIFT_MASK;
+            assert_eq!(smap.lookup(cas, Key::Left), Some(ShortcutAction::ResizeLeft));
+            assert_eq!(smap.lookup(cas, Key::Down), Some(ShortcutAction::ResizeDown));
+            // Existing bindings are untouched: Ctrl+1 is still workspace 1 and
+            // Ctrl+Shift+Left is still focus-left.
+            assert_eq!(smap.lookup(ModifierType::CONTROL_MASK, Key::_1), Some(ShortcutAction::Workspace1));
+            assert_eq!(
+                smap.lookup(ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK, Key::Left),
+                Some(ShortcutAction::FocusLeft)
+            );
+            assert_eq!(smap.accel(ShortcutAction::EqualizeSplits), Some("<Ctrl><Alt>equal"));
+            // Every action has an effective accelerator for menus/help.
+            assert_eq!(smap.accels.len(), KNOWN_SHORTCUTS.len());
+        });
+    }
+
+    #[test]
+    fn test_shortcut_map_pane_nav_overrides() {
+        on_gtk_thread("test_shortcut_map_pane_nav_overrides", || {
+            let config: Config = toml::from_str(r#"
+    [shortcuts]
+    focus_last_pane = "<Ctrl><Alt>Tab"
+    equalize_splits = "<Ctrl><Alt>0"
+    resize_left = "not a valid accel <<<"
+    split_right = "<Ctrl>t"
+    "#).unwrap();
+            let smap = ShortcutMap::from_config(&config.shortcuts);
+            let ca = ModifierType::CONTROL_MASK | ModifierType::ALT_MASK;
+            assert_eq!(smap.lookup(ca, Key::Tab), Some(ShortcutAction::FocusLastPane));
+            assert_eq!(smap.lookup(ca, Key::grave), None);
+            assert_eq!(smap.lookup(ca, Key::_0), Some(ShortcutAction::EqualizeSplits));
+            assert_eq!(smap.lookup(ca, Key::equal), None);
+            // Invalid override falls back to the default.
+            assert_eq!(
+                smap.lookup(ca | ModifierType::SHIFT_MASK, Key::Left),
+                Some(ShortcutAction::ResizeLeft)
+            );
+            assert_eq!(smap.accel(ShortcutAction::ResizeLeft), Some("<Ctrl><Alt><Shift>Left"));
+            // Accelerators exposed to menus follow the override.
+            assert_eq!(smap.accel(ShortcutAction::SplitRight), Some("<Ctrl>t"));
+            assert_eq!(smap.accel(ShortcutAction::FocusLastPane), Some("<Ctrl><Alt>Tab"));
+        });
+    }
+
+    #[test]
+    fn test_pane_nav_config_keys_are_accepted() {
+        let content = r#"
+[shortcuts]
+focus_pane_1 = "<Ctrl><Alt>F1"
+focus_pane_9 = "<Ctrl><Alt>F9"
+focus_last_pane = "<Ctrl><Alt>Tab"
+resize_left = "<Ctrl><Alt><Shift>h"
+resize_right = "<Ctrl><Alt><Shift>l"
+resize_up = "<Ctrl><Alt><Shift>k"
+resize_down = "<Ctrl><Alt><Shift>j"
+equalize_splits = "<Ctrl><Alt>0"
+focus_pane_typo = "<Ctrl><Alt>F2"
+"#;
+        // Only the misspelled key draws the unknown-action warning.
+        assert_eq!(unknown_shortcut_keys(content), vec!["focus_pane_typo".to_string()]);
+        let cfg: Config = toml::from_str(content).unwrap();
+        assert_eq!(cfg.shortcuts.focus_pane_9.as_deref(), Some("<Ctrl><Alt>F9"));
+        assert_eq!(cfg.shortcuts.resize_down.as_deref(), Some("<Ctrl><Alt><Shift>j"));
+        assert_eq!(cfg.shortcuts.equalize_splits.as_deref(), Some("<Ctrl><Alt>0"));
     }
 }
