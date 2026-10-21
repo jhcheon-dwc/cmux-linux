@@ -624,7 +624,8 @@ impl AppState {
         }
         let sid = surface_id.filter(|s| !s.is_empty())?;
         self.split_engines.iter().position(|engine| {
-            engine.all_panes().iter().any(|(uuid, _, _)| uuid.to_string() == sid)
+            // tabs: every tab's surface, not only each pane's visible one.
+            engine.all_surfaces().iter().any(|sf| sf.uuid.to_string() == sid)
         })
     }
 

@@ -656,6 +656,7 @@ impl SplitEngine {
     }
 
     pub fn split_active(&mut self, orientation: gtk4::Orientation) -> Option<u64> {
+        self.front_active_tab();
         let active_id = self.active_pane_id;
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -752,6 +753,7 @@ impl SplitEngine {
     /// Returns (new_pane_id, picture_widget, url_entry) so the caller can wire streaming and URL navigation.
     /// The active terminal pane stays on the left and retains focus.
     pub fn split_active_with_preview(&mut self) -> Option<crate::browser::PreviewPaneWidgets> {
+        self.front_active_tab();
         let active_id = self.active_pane_id;
         let new_pane_id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -2214,7 +2216,8 @@ pub struct TabInfo {
 pub struct SurfaceInfo {
     pub uuid: Uuid,
     pub pane_id: u64,
-    pub gl_area: gtk4::GLArea,
+    /// None for a browser preview pane.
+    pub gl_area: Option<gtk4::GLArea>,
     /// Visible tab of the workspace's active pane.
     pub active: bool,
     pub tab_index: usize,
@@ -2301,6 +2304,9 @@ fn free_tab(entry: crate::tabs::TabEntry, ui: Option<&crate::tabs::PaneTabsUi>) 
         }
         if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
             registry.remove(&(surface as usize));
+        }
+        if let Ok(mut map) = crate::ghostty::callbacks::SURFACE_WORKSPACE.lock() {
+            map.remove(&(surface as usize));
         }
     }
 }
@@ -2421,6 +2427,17 @@ impl SplitEngine {
         tab_location_in(&self.root, id)
     }
 
+    /// tabs: socket handlers may set active_pane_id to any terminal, including
+    /// a background tab; bring that tab to the front so tree operations (which
+    /// match each pane by its visible tab) find it.
+    fn front_active_tab(&mut self) {
+        let id = self.active_pane_id;
+        if let Some((leaf, index, _)) = self.tab_location(id).filter(|(leaf, _, _)| *leaf != id) {
+            self.active_pane_id = leaf;
+            self.select_tab_in(leaf, index);
+        }
+    }
+
     /// True if terminal `id` is a background tab of its pane.
     pub fn is_background_tab(&self, id: u64) -> bool {
         self.tab_location(id).is_some_and(|(leaf, _, _)| leaf != id)
@@ -2443,6 +2460,7 @@ impl SplitEngine {
     /// Open a new tab right of the active tab of the active pane, in that
     /// terminal's working directory, and focus it. Returns its pane_id.
     pub fn new_tab(&mut self) -> Option<u64> {
+        self.front_active_tab();
         let active_id = self.active_pane_id;
         if !matches!(self.root.find_node(active_id), Some(SplitNode::Leaf { .. })) {
             return None; // browser preview
@@ -2663,6 +2681,17 @@ impl SplitEngine {
         collect_leaves_in_order(&self.root, &mut leaves);
         let mut out = Vec::new();
         for leaf_id in leaves {
+            if let Some(SplitNode::Preview { uuid, .. }) = self.root.find_node(leaf_id) {
+                out.push(SurfaceInfo {
+                    uuid: *uuid,
+                    pane_id: leaf_id,
+                    gl_area: None,
+                    active: leaf_id == self.active_pane_id,
+                    tab_index: 0,
+                    tab_count: 1,
+                });
+                continue;
+            }
             let Some(leaf) = leaf_ref(&self.root, leaf_id) else { continue };
             let tabs = leaf_tabs_in_order(leaf);
             let count = tabs.len();
@@ -2670,7 +2699,7 @@ impl SplitEngine {
                 out.push(SurfaceInfo {
                     uuid,
                     pane_id,
-                    gl_area,
+                    gl_area: Some(gl_area),
                     active: active && leaf_id == self.active_pane_id,
                     tab_index: index,
                     tab_count: count,

@@ -554,7 +554,8 @@ pub fn handle_socket_command(
                 // tabs: one entry per terminal tab, with its position in its pane.
                 for sf in engine.all_surfaces() {
                     // terminal-actions: last OSC title of this pane, if any.
-                    let title = crate::header_bar::surface_for_widget(sf.gl_area.upcast_ref())
+                    let title = sf.gl_area.as_ref()
+                        .and_then(|a| crate::header_bar::surface_for_widget(a.upcast_ref()))
                         .and_then(crate::header_bar::title_for_surface);
                     panes.push(json!({
                         "uuid": sf.uuid.to_string(),

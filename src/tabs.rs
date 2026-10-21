@@ -204,6 +204,17 @@ impl PaneTabsUi {
             while let Some(widget) = child {
                 if !widget.is_realized() {
                     widget.realize();
+                    // create_surface's realize marks every new surface focused;
+                    // a background tab is not.
+                    let hidden = stack.visible_child().as_ref() != Some(&widget);
+                    let surface = widget
+                        .downcast_ref::<gtk4::GLArea>()
+                        .and_then(|area| live_surface(area, std::ptr::null_mut()));
+                    if let (true, Some(surface)) = (hidden, surface) {
+                        unsafe {
+                            ffi::ghostty_surface_set_focus(surface, false);
+                        }
+                    }
                 }
                 child = widget.next_sibling();
             }
@@ -259,10 +270,11 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     close.connect_clicked(move |_| request(TabRequest::Close(ptr)));
     item.append(&close);
 
-    // Left click selects, middle click closes.
+    // Left click selects, middle click closes. On release: selecting rebuilds
+    // the bar, which would cancel a drag started on this tab.
     let click = gtk4::GestureClick::new();
     click.set_button(0);
-    click.connect_pressed(move |gesture, _, _, _| match gesture.current_button() {
+    click.connect_released(move |gesture, _, _, _| match gesture.current_button() {
         1 => request(TabRequest::Select(ptr)),
         2 => request(TabRequest::Close(ptr)),
         _ => {}
@@ -349,9 +361,9 @@ fn handle_request(req: TabRequest) {
     drop(s);
     match req {
         TabRequest::Select(_) => {
-            if let Some(engine) = state.borrow_mut().split_engines.get_mut(ws_idx) {
+            with_attention_sync(&state, ws_idx, |engine| {
                 engine.focus_pane(tab_id);
-            }
+            });
         }
         TabRequest::Close(_) => {
             let closed_in_background = state
@@ -373,8 +385,12 @@ fn handle_request(req: TabRequest) {
             let mut s = state.borrow_mut();
             let target = s.split_engines.get(ws_idx).and_then(|e| e.terminal_for_gl_area(to));
             if let (Some(engine), Some(to_id)) = (s.split_engines.get_mut(ws_idx), target) {
-                if let Some((_, index, _)) = engine.tab_location(to_id) {
-                    engine.move_tab(tab_id, index);
+                let (from_loc, to_loc) = (engine.tab_location(tab_id), engine.tab_location(to_id));
+                // Only within one pane: a drop on another pane's bar is ignored.
+                if let (Some((from_leaf, _, _)), Some((to_leaf, index, _))) = (from_loc, to_loc) {
+                    if from_leaf == to_leaf {
+                        engine.move_tab(tab_id, index);
+                    }
                 }
             }
         }
@@ -434,14 +450,41 @@ pub fn handle_new_tab(state: &crate::app_state::AppStateRef) -> Option<u64> {
     id
 }
 
+/// True if the focused pane has more than one tab. Tab shortcuts are left to
+/// the terminal otherwise (Alt+digits, Ctrl+Tab, Ctrl+PageUp/Down are app keys).
+pub fn active_pane_has_tabs(state: &crate::app_state::AppStateRef) -> bool {
+    state
+        .try_borrow()
+        .ok()
+        .and_then(|s| {
+            let engine = s.active_split_engine()?;
+            engine.tab_location(engine.active_pane_id)
+        })
+        .is_some_and(|(_, _, count)| count > 1)
+}
+
+/// Run a tab switch on workspace `ws_idx`; if it cleared the last tab
+/// attention there, clear the workspace's sidebar dot too.
+fn with_attention_sync<R>(
+    state: &crate::app_state::AppStateRef,
+    ws_idx: usize,
+    f: impl FnOnce(&mut crate::split_engine::SplitEngine) -> R,
+) -> Option<R> {
+    let mut s = state.borrow_mut();
+    let engine = s.split_engines.get_mut(ws_idx)?;
+    let before = engine.root.any_attention();
+    let result = f(engine);
+    let after = engine.root.any_attention();
+    if before && !after {
+        s.clear_workspace_attention(ws_idx);
+    }
+    Some(result)
+}
+
 /// Next/previous tab of the focused pane (Ctrl+Tab / Ctrl+Shift+Tab).
 pub fn handle_cycle_tab(state: &crate::app_state::AppStateRef, forward: bool) {
-    let changed = state
-        .borrow_mut()
-        .active_split_engine_mut()
-        .map(|e| e.cycle_tab(forward))
-        .unwrap_or(false);
-    if changed {
+    let idx = state.borrow().active_index;
+    if with_attention_sync(state, idx, |e| e.cycle_tab(forward)).unwrap_or(false) {
         save_session(state);
     }
 }
@@ -451,13 +494,31 @@ pub fn handle_goto_tab(state: &crate::app_state::AppStateRef, n: usize) {
     if n == 0 {
         return;
     }
-    let changed = state
-        .borrow_mut()
-        .active_split_engine_mut()
-        .map(|e| e.select_tab(n - 1))
-        .unwrap_or(false);
-    if changed {
+    let idx = state.borrow().active_index;
+    if with_attention_sync(state, idx, |e| e.select_tab(n - 1)).unwrap_or(false) {
         save_session(state);
+    }
+}
+
+/// After a tab.* request touched the background workspace `ws_idx`: that
+/// workspace's terminal must not keep Ghostty/GTK focus; give it back to the
+/// visible workspace (SOCK-05).
+fn restore_visible_focus(s: &mut crate::app_state::AppState, ws_idx: usize) {
+    if ws_idx == s.active_index {
+        return;
+    }
+    if let Some(engine) = s.split_engines.get(ws_idx) {
+        if let Some(surface) = engine.find_surface(engine.active_pane_id) {
+            unsafe {
+                ffi::ghostty_surface_set_focus(surface, false);
+            }
+        }
+    }
+    if let Some(page) = s.workspaces.get(s.active_index).map(|ws| ws.stack_page_name.clone()) {
+        s.stack.set_visible_child_name(&page);
+    }
+    if let Some(engine) = s.split_engines.get(s.active_index) {
+        engine.focus_active_surface();
     }
 }
 
@@ -562,9 +623,9 @@ pub fn handle_socket(
                 let mut s = state.borrow_mut();
                 let engine = s.split_engines.get_mut(ws_idx).ok_or(("not_found", "workspace gone".to_string()))?;
                 engine.focus_pane(tab_id);
-                engine
-                    .new_tab()
-                    .ok_or(("new_tab_failed", "the pane is not a terminal".to_string()))?
+                let id = engine.new_tab();
+                restore_visible_focus(&mut s, ws_idx);
+                id.ok_or(("new_tab_failed", "the pane is not a terminal".to_string()))?
             };
             save_session(state);
             let s = state.borrow();
@@ -578,16 +639,24 @@ pub fn handle_socket(
             let result = {
                 let mut s = state.borrow_mut();
                 let engine = s.split_engines.get_mut(ws_idx).ok_or(("not_found", "workspace gone".to_string()))?;
-                if engine.close_tab(tab_id) {
+                let orig = engine.active_pane_id;
+                let result = if engine.close_tab(tab_id) {
                     Ok(())
+                } else if engine.tab_location(tab_id).is_some_and(|(leaf, _, _)| leaf == orig) {
+                    // Last tab of the focused pane: close the pane.
+                    engine.close_active().map(|_| ()).ok_or(())
                 } else {
-                    // Last tab of its pane: close the pane, as surface.close does.
+                    // Last tab of another pane: close that pane, then put the
+                    // user's focus back (as surface.close does).
                     engine.focus_pane(tab_id);
-                    engine
-                        .close_active()
-                        .map(|_| ())
-                        .ok_or(("close_failed", "cannot close the last pane of a workspace".to_string()))
-                }
+                    let r = engine.close_active().map(|_| ()).ok_or(());
+                    if engine.tab_location(orig).is_some() {
+                        engine.focus_pane(orig);
+                    }
+                    r
+                };
+                restore_visible_focus(&mut s, ws_idx);
+                result.map_err(|_| ("close_failed", "cannot close the last pane of a workspace".to_string()))
             };
             result?;
             save_session(state);
@@ -601,6 +670,7 @@ pub fn handle_socket(
                     s.switch_to_index(ws_idx);
                 }
                 let engine = s.split_engines.get_mut(ws_idx).ok_or(("not_found", "workspace gone".to_string()))?;
+                let attention_before = engine.root.any_attention();
                 engine.focus_pane(tab_id);
                 let ok = match method {
                     "tab.select" => match params.get("index").and_then(|v| v.as_u64()) {
@@ -618,6 +688,9 @@ pub fn handle_socket(
                         true
                     }
                 };
+                if attention_before && !engine.root.any_attention() {
+                    s.clear_workspace_attention(ws_idx);
+                }
                 if !ok {
                     return Err(("not_found", "no tab at that index".to_string()));
                 }
