@@ -1185,12 +1185,16 @@ fn replace_child_in_parent(
     new_widget: &gtk4::Widget,
 ) {
     if let Some(paned) = parent.downcast_ref::<gtk4::Paned>() {
-        if paned
+        let is_start = paned
             .start_child()
             .as_ref()
             .map(|w| w == old_widget)
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        // new_widget is usually still a child of old_widget (the Paned being
+        // collapsed); a widget can't have two parents, so without unparenting
+        // first the swap fails and the closed pane stays on screen, frozen.
+        remove_widget_from_parent(new_widget);
+        if is_start {
             paned.set_start_child(Some(new_widget));
         } else {
             paned.set_end_child(Some(new_widget));
