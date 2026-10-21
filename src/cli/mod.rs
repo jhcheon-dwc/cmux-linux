@@ -630,6 +630,23 @@ pub enum BrowserCommand {
         #[arg(long)]
         surface: Option<String>,
     },
+
+    // app-site
+    /// Web app manifest of the current page (URL, errors, parsed JSON)
+    Manifest {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+    },
+    /// Storage usage/quota of the current origin, or clear its site data
+    #[command(name = "site-data")]
+    SiteData {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Clear site data; optional comma-separated CDP storage types
+        /// (e.g. cookies,local_storage,indexeddb,cache_storage); default all
+        #[arg(long, value_name = "TYPES", num_args = 0..=1, default_missing_value = "all")]
+        clear: Option<String>,
+    },
 }
 
 /// Run the CLI with the parsed arguments.
@@ -894,6 +911,25 @@ fn browser_command_to_rpc(cmd: &BrowserCommand) -> (&'static str, serde_json::Va
                 json!({"surface_ref": surface, "scopeURL": scope}),
             ),
             (None, None) => ("browser.service_workers", json!({"surface_ref": surface})),
+        },
+
+        // app-site
+        BrowserCommand::Manifest { surface } => {
+            ("browser.manifest", json!({"surface_ref": surface}))
+        }
+        BrowserCommand::SiteData { surface, clear } => match clear {
+            // `--clear surface:2` (flag before the surface) makes clap take the
+            // surface as TYPES; storage types never contain ':' or '-', so
+            // treat such a value as the surface and clear everything.
+            Some(v) if surface.is_none() && (v.contains(':') || v.contains('-')) => (
+                "browser.clear_site_data",
+                json!({"surface_ref": v, "types": "all"}),
+            ),
+            Some(types) => (
+                "browser.clear_site_data",
+                json!({"surface_ref": surface, "types": types}),
+            ),
+            None => ("browser.storage_usage", json!({"surface_ref": surface})),
         },
     }
 }
@@ -1464,6 +1500,35 @@ mod tests {
         assert!(
             Cli::try_parse_from(["cmux", "browser", "sw", "--update", "a", "--unregister", "b"])
                 .is_err()
+        );
+    }
+
+    // app-site
+    #[test]
+    fn browser_manifest_and_site_data() {
+        assert_eq!(
+            rpc(&["browser", "manifest"]),
+            ("browser.manifest", json!({"surface_ref": null}))
+        );
+        assert_eq!(
+            rpc(&["browser", "site-data"]),
+            ("browser.storage_usage", json!({"surface_ref": null}))
+        );
+        assert_eq!(
+            rpc(&["browser", "site-data", "--clear"]),
+            ("browser.clear_site_data", json!({"surface_ref": null, "types": "all"}))
+        );
+        assert_eq!(
+            rpc(&["browser", "site-data", "surface:2", "--clear", "cookies,local_storage"]),
+            (
+                "browser.clear_site_data",
+                json!({"surface_ref": "surface:2", "types": "cookies,local_storage"})
+            )
+        );
+        // Flag before the surface: the surface must not be taken as TYPES.
+        assert_eq!(
+            rpc(&["browser", "site-data", "--clear", "surface:2"]),
+            ("browser.clear_site_data", json!({"surface_ref": "surface:2", "types": "all"}))
         );
     }
 }

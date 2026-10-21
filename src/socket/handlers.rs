@@ -274,6 +274,8 @@ pub fn handle_socket_command(
                 "browser.cache_list", "browser.cache_entries", "browser.cache_delete",
                 "browser.service_workers", "browser.service_worker_unregister",
                 "browser.service_worker_update",
+                // app-site
+                "browser.manifest", "browser.storage_usage", "browser.clear_site_data",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
