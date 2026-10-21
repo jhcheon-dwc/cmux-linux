@@ -599,6 +599,37 @@ pub enum BrowserCommand {
         #[arg(long, default_value_t = 50)]
         limit: u64,
     },
+
+    // app-cache-sw
+    /// Cache Storage: list caches, list a cache's entries, or delete
+    Caches {
+        /// Cache ID (from the list) to show entries of
+        id: Option<String>,
+        /// Delete the cache, or only the entry with this request URL
+        #[arg(long, value_name = "URL", num_args = 0..=1, requires = "id")]
+        delete: Option<Option<String>>,
+        /// Entries to skip (paging)
+        #[arg(long, default_value_t = 0)]
+        skip: u64,
+        /// Maximum entries to return
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+        /// Surface reference (surface:N or UUID); optional
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Service workers of the current origin; update or unregister one by scope
+    Sw {
+        /// Unregister the registration with this scope URL
+        #[arg(long, value_name = "SCOPE", conflicts_with = "update")]
+        unregister: Option<String>,
+        /// Trigger an update check for the registration with this scope URL
+        #[arg(long, value_name = "SCOPE")]
+        update: Option<String>,
+        /// Surface reference (surface:N or UUID); optional
+        #[arg(long)]
+        surface: Option<String>,
+    },
 }
 
 /// Run the CLI with the parsed arguments.
@@ -836,6 +867,34 @@ fn browser_command_to_rpc(cmd: &BrowserCommand) -> (&'static str, serde_json::Va
                 _ => ("browser.indexeddb_databases", json!({"database": database})),
             }
         }
+        // app-cache-sw
+        BrowserCommand::Caches { id, delete, skip, limit, surface } => match (id, delete) {
+            (None, _) => ("browser.cache_list", json!({"surface_ref": surface})),
+            (Some(id), None) => (
+                "browser.cache_entries",
+                json!({"surface_ref": surface, "cacheId": id, "skip": skip, "limit": limit}),
+            ),
+            // `--delete` alone deletes the cache; `--delete URL` one entry (an
+            // explicitly empty URL is sent as-is so the daemon rejects it).
+            (Some(id), Some(url)) => {
+                let mut p = json!({"surface_ref": surface, "cacheId": id});
+                if let Some(url) = url {
+                    p["requestURL"] = json!(url);
+                }
+                ("browser.cache_delete", p)
+            }
+        },
+        BrowserCommand::Sw { unregister, update, surface } => match (unregister, update) {
+            (Some(scope), _) => (
+                "browser.service_worker_unregister",
+                json!({"surface_ref": surface, "scopeURL": scope}),
+            ),
+            (None, Some(scope)) => (
+                "browser.service_worker_update",
+                json!({"surface_ref": surface, "scopeURL": scope}),
+            ),
+            (None, None) => ("browser.service_workers", json!({"surface_ref": surface})),
+        },
     }
 }
 
@@ -1348,5 +1407,63 @@ mod tests {
         assert!(idb_rpc(&["d", "--index", "i"]).is_err());
         assert!(idb_rpc(&["--delete"]).is_err());
         assert!(idb_rpc(&["d", "s", "--delete"]).is_err());
+    }
+
+    // app-cache-sw
+    #[test]
+    fn browser_caches_and_sw() {
+        assert_eq!(
+            rpc(&["browser", "caches"]),
+            ("browser.cache_list", json!({"surface_ref": null}))
+        );
+        assert_eq!(
+            rpc(&["browser", "caches", "c1", "--limit", "5"]),
+            (
+                "browser.cache_entries",
+                json!({"surface_ref": null, "cacheId": "c1", "skip": 0, "limit": 5})
+            )
+        );
+        assert_eq!(
+            rpc(&["browser", "caches", "c1", "--delete"]),
+            ("browser.cache_delete", json!({"surface_ref": null, "cacheId": "c1"}))
+        );
+        assert_eq!(
+            rpc(&["browser", "caches", "c1", "--delete", "http://h/a"]),
+            (
+                "browser.cache_delete",
+                json!({"surface_ref": null, "cacheId": "c1", "requestURL": "http://h/a"})
+            )
+        );
+        assert_eq!(
+            rpc(&["browser", "caches", "c1", "--delete", ""]),
+            (
+                "browser.cache_delete",
+                json!({"surface_ref": null, "cacheId": "c1", "requestURL": ""})
+            )
+        );
+        assert!(Cli::try_parse_from(["cmux", "browser", "caches", "--delete"]).is_err());
+
+        assert_eq!(
+            rpc(&["browser", "sw", "--surface", "surface:1"]),
+            ("browser.service_workers", json!({"surface_ref": "surface:1"}))
+        );
+        assert_eq!(
+            rpc(&["browser", "sw", "--unregister", "http://h/"]),
+            (
+                "browser.service_worker_unregister",
+                json!({"surface_ref": null, "scopeURL": "http://h/"})
+            )
+        );
+        assert_eq!(
+            rpc(&["browser", "sw", "--update", "http://h/"]),
+            (
+                "browser.service_worker_update",
+                json!({"surface_ref": null, "scopeURL": "http://h/"})
+            )
+        );
+        assert!(
+            Cli::try_parse_from(["cmux", "browser", "sw", "--update", "a", "--unregister", "b"])
+                .is_err()
+        );
     }
 }

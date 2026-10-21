@@ -270,6 +270,10 @@ pub fn handle_socket_command(
                 // app-idb
                 "browser.indexeddb_databases", "browser.indexeddb_data",
                 "browser.indexeddb_clear", "browser.indexeddb_delete",
+                // app-cache-sw
+                "browser.cache_list", "browser.cache_entries", "browser.cache_delete",
+                "browser.service_workers", "browser.service_worker_unregister",
+                "browser.service_worker_update",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
