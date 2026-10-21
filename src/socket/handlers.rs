@@ -1076,6 +1076,7 @@ pub fn handle_socket_command(
                     _ => &action,
                 };
                 if let Some(obj) = params.as_object_mut() {
+                    normalize_browser_params(daemon_action, obj);
                     if action.ends_with(".clear") {
                         obj.insert("clear".to_string(), json!(true));
                     }
@@ -1361,5 +1362,72 @@ fn find_preview_picture(node: &crate::split_engine::SplitNode) -> Option<gtk4::P
             find_preview_picture(start).or_else(|| find_preview_picture(end))
         }
         crate::split_engine::SplitNode::Leaf { .. } => None,
+    }
+}
+
+/// Rename cmux's browser params to the names the agent-browser daemon reads:
+/// `cmux browser click/fill` send `target` (+ `text` for fill) and
+/// `cmux browser wait` sends snake_case keys, but the daemon wants `selector`,
+/// `value`, `url`, `loadState` and `timeout`. Keys the caller already sent under
+/// the daemon's name win; null placeholders from the CLI are dropped.
+fn normalize_browser_params(daemon_action: &str, obj: &mut serde_json::Map<String, Value>) {
+    let renames: &[(&str, &str)] = match daemon_action {
+        "click" | "dblclick" | "hover" | "focus" | "check" | "uncheck" => &[("target", "selector")],
+        "fill" => &[("target", "selector"), ("text", "value")],
+        "wait" => &[("url_contains", "url"), ("load_state", "loadState"), ("timeout_ms", "timeout")],
+        _ => &[],
+    };
+    for (from, to) in renames {
+        let Some(v) = obj.remove(*from) else { continue };
+        if !v.is_null() && obj.get(*to).map_or(true, Value::is_null) {
+            obj.insert(to.to_string(), v);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn normalized(action: &str, params: Value) -> Value {
+        let mut params = params;
+        normalize_browser_params(action, params.as_object_mut().unwrap());
+        params
+    }
+
+    #[test]
+    fn click_and_fill_send_selector_and_value() {
+        assert_eq!(
+            normalized("click", json!({"target": "e1", "snapshot_after": false})),
+            json!({"selector": "e1", "snapshot_after": false})
+        );
+        assert_eq!(
+            normalized("fill", json!({"target": "#q", "text": "한글"})),
+            json!({"selector": "#q", "value": "한글"})
+        );
+    }
+
+    #[test]
+    fn explicit_daemon_names_win() {
+        assert_eq!(
+            normalized("click", json!({"target": "a", "selector": "@e2"})),
+            json!({"selector": "@e2"})
+        );
+        // `type` already uses selector/text: untouched.
+        assert_eq!(
+            normalized("type", json!({"selector": "#i", "text": "x"})),
+            json!({"selector": "#i", "text": "x"})
+        );
+    }
+
+    #[test]
+    fn wait_keys_become_camel_case_and_nulls_drop() {
+        assert_eq!(
+            normalized("wait", json!({
+                "selector": null, "text": null, "url_contains": "iana",
+                "load_state": null, "timeout_ms": 5000
+            })),
+            json!({"selector": null, "text": null, "url": "iana", "timeout": 5000})
+        );
     }
 }
