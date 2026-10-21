@@ -1010,6 +1010,11 @@ impl SplitEngine {
             return None; // Signal to AppState: close the workspace instead
         }
 
+        // A browser preview has no Ghostty surface to free.
+        if matches!(self.root.find_node(active_id), Some(SplitNode::Preview { .. })) {
+            return self.close_preview(active_id);
+        }
+
         // Don't close the last terminal pane if only a Preview would survive.
         // A Preview-only workspace has no terminal and the Ghostty surface free
         // can crash when no terminal remains to receive focus.
@@ -1088,6 +1093,50 @@ impl SplitEngine {
         }
 
         Some(surviving_id)
+    }
+
+    /// Remove the browser preview pane `pane_id`. If it was the active pane, the
+    /// surviving sibling becomes active and takes focus. Returns the active pane.
+    pub fn close_preview(&mut self, pane_id: u64) -> Option<u64> {
+        if !matches!(self.root.find_node(pane_id), Some(SplitNode::Preview { .. })) {
+            return None;
+        }
+        let surviving_id = remove_leaf_from_tree(&mut self.root, pane_id)?;
+        self.focus_history.forget(pane_id);
+        if self.active_pane_id == pane_id {
+            self.focus_history.forget(surviving_id);
+            self.active_pane_id = surviving_id;
+        }
+        self.root.update_focus_css(self.active_pane_id);
+        self.focus_active_surface();
+        Some(self.active_pane_id)
+    }
+
+    /// Pane ids of every browser preview in this workspace.
+    pub fn preview_pane_ids(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        self.root.collect_pane_ids(&mut ids);
+        ids.retain(|id| matches!(self.root.find_node(*id), Some(SplitNode::Preview { .. })));
+        ids
+    }
+
+    /// Make the browser preview `pane_id` the active pane after a click inside it,
+    /// without moving GTK focus: the click itself focuses the URL bar or the page.
+    pub fn activate_preview(&mut self, pane_id: u64) -> bool {
+        if pane_id == self.active_pane_id
+            || !matches!(self.root.find_node(pane_id), Some(SplitNode::Preview { .. }))
+        {
+            return false;
+        }
+        self.focus_history.record(self.active_pane_id, pane_id);
+        if let Some(old_surface) = self.find_surface(self.active_pane_id) {
+            unsafe {
+                ffi::ghostty_surface_set_focus(old_surface, false);
+            }
+        }
+        self.active_pane_id = pane_id;
+        self.root.update_focus_css(pane_id);
+        true
     }
 
     /// Navigate focus to the pane adjacent in `direction` (Ctrl+Alt+arrows per D-10).

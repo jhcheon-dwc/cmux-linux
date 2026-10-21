@@ -461,6 +461,53 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
         });
     }
 
+    // Close button: same as Ctrl+Shift+Q.
+    {
+        let state_for_close = state.clone();
+        widgets.close_btn.connect_clicked(move |_| {
+            let state = state_for_close.clone();
+            // Not from inside the click handler: closing unparents this button.
+            glib::idle_add_local_once(move || handle_browser_close(&state));
+        });
+    }
+
+    // A click anywhere in the preview makes it the active pane, so Ctrl+Shift+W
+    // closes it and focus restoration no longer pulls focus back to the terminal.
+    // Capture phase: runs before the URL bar and page take the click.
+    {
+        let click = gtk4::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let state_for_click = state.clone();
+        let pane_id = widgets.pane_id;
+        click.connect_pressed(move |_, _, _, _| {
+            if let Ok(mut s) = state_for_click.try_borrow_mut() {
+                if let Some(engine) = s.active_split_engine_mut() {
+                    engine.activate_preview(pane_id);
+                }
+            }
+        });
+        widgets.container.add_controller(click);
+
+        // Take focus explicitly on press: the entry otherwise only focuses once
+        // its inner text widget accepts the click.
+        let entry_click = gtk4::GestureClick::new();
+        entry_click.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let entry_for_click = url_entry.clone();
+        entry_click.connect_pressed(move |_, _, _, _| {
+            // GtkEntry hands focus to its inner text widget; grabbing again
+            // while focused would select all and lose the click position.
+            let focused = entry_for_click
+                .root()
+                .and_then(|r| r.focus())
+                .is_some_and(|f| f.is_ancestor(&entry_for_click));
+            if !focused {
+                entry_for_click.grab_focus();
+            }
+        });
+        url_entry.add_controller(entry_click);
+    }
+
     // Step 3.5: Create async motion forwarder channel (D-08)
     let motion_tx = {
         let s = state.borrow();
@@ -793,6 +840,15 @@ fn cdp_modifiers(mods: gtk4::gdk::ModifierType) -> i32 {
 /// Close the browser preview and shut down the daemon (Ctrl+Shift+Q).
 pub fn handle_browser_close(state: &Rc<RefCell<AppState>>) {
     let mut s = state.borrow_mut();
+    // All previews show the one shared browser, so they all go with it.
+    for engine in s.split_engines.iter_mut() {
+        for id in engine.preview_pane_ids() {
+            engine.close_preview(id);
+        }
+    }
+    if let Some(engine) = s.active_split_engine() {
+        engine.focus_active_surface();
+    }
     if let Some(ref mut bm) = s.browser_manager {
         bm.shutdown();
         s.browser_manager = None;

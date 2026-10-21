@@ -167,13 +167,14 @@ popover.menu separator { background-color: var(--color-line); }
 
 /* ── Browser preview pane ─────────────────────────────────────────────────── */
 .browser-preview, .preview-container { background-color: var(--color-surface-sunken); }
-.browser-url-bar { font-size: var(--font-size-label); padding: var(--space-xs) var(--space-md); background-color: var(--color-surface-raised); color: var(--color-text-primary); border-bottom: 1px solid var(--color-line); }
+entry.browser-url-bar { font-size: var(--font-size-label); min-height: 26px; padding: 0 var(--space-md); margin: 0 var(--space-xs); background-color: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-line); border-radius: var(--rounded-md); box-shadow: none; }
+entry.browser-url-bar:focus-within { border-color: var(--color-focus); }
 .preview-empty, .preview-error { color: var(--color-text-secondary); font-size: var(--font-size-label); font-weight: 400; padding: 32px; }
 .preview-error { color: var(--color-tertiary); }
 .stream-indicator { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-secondary); margin: 0 var(--space-xs); }
 .browser-nav-bar { background-color: var(--color-surface-chrome); padding: var(--space-xs) var(--space-md); border-bottom: 1px solid var(--color-line); }
 button.browser-nav-btn {
-  min-width: 28px; min-height: 28px; padding: var(--space-xs); margin: 0 var(--space-xxs);
+  min-width: 24px; min-height: 26px; padding: 0 var(--space-xxs); margin: 0;
   border-radius: var(--rounded-md); background: none; box-shadow: none; border: none;
   color: var(--color-text-secondary); font-size: var(--font-size-label);
 }

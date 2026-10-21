@@ -287,6 +287,7 @@ pub struct PreviewPaneWidgets {
     pub reload_btn: gtk4::Button,
     pub go_btn: gtk4::Button,
     pub devtools_btn: gtk4::ToggleButton,
+    pub close_btn: gtk4::Button,
     pub pane_id: u64,
     pub uuid: Uuid,
 }
@@ -331,6 +332,9 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     url_entry.set_placeholder_text(Some("Enter URL..."));
     url_entry.add_css_class("browser-url-bar");
     url_entry.set_hexpand(true);
+    // Keep the URL bar clickable when the pane is narrow: without a minimum
+    // width the nav buttons squeeze it down to a few pixels.
+    url_entry.set_width_chars(16);
 
     let go_btn = gtk4::Button::with_label("\u{2192}");
     go_btn.add_css_class("browser-nav-btn");
@@ -342,6 +346,11 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     devtools_btn.add_css_class("browser-nav-devtools");
     devtools_btn.set_tooltip_text(Some("Developer Tools"));
 
+    let close_btn = gtk4::Button::with_label("\u{2715}");
+    close_btn.add_css_class("browser-nav-btn");
+    close_btn.add_css_class("browser-nav-close");
+    close_btn.set_tooltip_text(Some("Close Browser (Ctrl+Shift+Q)"));
+
     // Navigation bar: horizontal box with buttons + URL entry
     let nav_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     nav_bar.add_css_class("browser-nav-bar");
@@ -351,6 +360,7 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     nav_bar.append(&url_entry);
     nav_bar.append(&go_btn);
     nav_bar.append(&devtools_btn);
+    nav_bar.append(&close_btn);
 
     // Vertical box: nav bar on top, picture overlay below
     let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -366,6 +376,7 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
         reload_btn,
         go_btn,
         devtools_btn,
+        close_btn,
         pane_id: next_pane_id,
         uuid,
     }

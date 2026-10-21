@@ -46,6 +46,16 @@ pub fn register_actions(
     });
     window.add_action(&action);
 
+    // win.browser-close: removes the preview panes and stops the browser.
+    let action = gio::SimpleAction::new("browser-close", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| {
+            crate::shortcuts::handle_browser_close(&state);
+        }
+    });
+    window.add_action(&action);
+
     // win.close-pane
     let action = gio::SimpleAction::new("close-pane", None);
     action.connect_activate({
@@ -311,6 +321,7 @@ pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::Short
         ("win.close-workspace", A::CloseWorkspace),
         ("win.new-ssh-workspace", A::NewSshWorkspace),
         ("win.browser-open", A::BrowserOpen),
+        ("win.browser-close", A::BrowserClose),
         ("win.close-pane", A::ClosePane),
         ("win.toggle-sidebar", A::ToggleSidebar),
         ("win.split-right", A::SplitRight),
@@ -422,7 +433,7 @@ pub fn build_browser_context_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Open in External Browser"), Some("win.open-external-browser"));
     menu.append(Some("Copy URL"), Some("win.copy-url"));
-    menu.append(Some("Close Pane"), Some("win.close-pane"));
+    menu.append(Some("Close Browser"), Some("win.browser-close"));
     menu
 }
 
