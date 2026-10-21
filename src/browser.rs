@@ -668,8 +668,10 @@ fn query_page_url(daemon_socket_path: &std::path::Path) -> Option<String> {
 
 /// Keep `url_entry` showing the page's current URL, whatever navigated it (link
 /// clicks, back/forward, `cmux browser open`). Polls the daemon off the GTK
-/// thread and stops once the entry leaves the window. The entry is not touched
-/// while it has focus, so typing a URL is never clobbered.
+/// thread and stops once the entry leaves the window. While the entry has focus
+/// it is only updated if its text is still what the watcher (or an Enter in the
+/// entry) last put there, so typing a URL is never clobbered but a focused,
+/// untouched entry still follows CLI navigation and redirects.
 pub fn spawn_url_watcher(
     runtime: &tokio::runtime::Handle,
     daemon_socket_path: PathBuf,
@@ -688,19 +690,40 @@ pub fn spawn_url_watcher(
             }
         }
     });
+    // Text the entry held when it was last synced; anything else is a user edit.
+    let synced = std::rc::Rc::new(std::cell::RefCell::new(url_entry.text().to_string()));
+    // Enter submits the typed URL: from then on it counts as synced (after the
+    // navigate handler has normalized it), so the page URL may replace it.
+    url_entry.connect_activate({
+        let synced = synced.clone();
+        move |entry| {
+            let entry = entry.downgrade();
+            let synced = synced.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(entry) = entry.upgrade() {
+                    *synced.borrow_mut() = entry.text().to_string();
+                }
+            });
+        }
+    });
     let entry_weak = url_entry.downgrade();
     glib::MainContext::default().spawn_local(async move {
         while let Some(url) = rx.recv().await {
             let Some(entry) = entry_weak.upgrade() else { break };
             let Some(root) = entry.root() else { break };
-            if root.focus().is_some_and(|f| f.is_ancestor(&entry)) {
+            let focused = root.focus().is_some_and(|f| f.is_ancestor(&entry));
+            if focused && entry.text() != *synced.borrow() {
                 continue;
             }
             // about:blank shows the placeholder instead.
             let text = if url == "about:blank" { "" } else { url.as_str() };
             if entry.text() != text {
                 entry.set_text(text);
+                if focused {
+                    entry.set_position(-1);
+                }
             }
+            *synced.borrow_mut() = text.to_string();
         }
     });
 }
