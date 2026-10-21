@@ -848,8 +848,17 @@ pub fn create_surface(
             // bit 1: momentum (1 if momentum scrolling)
             let scroll_mods = if is_pixel { 1 } else { 0 };
 
+            // Match Ghostty's GTK apprt (ecMouseScrollVertical): GTK deltas are
+            // inverted for Ghostty's scroll callback, and precision (touchpad)
+            // deltas are scaled by 10 for a usable scroll speed.
+            let multiplier = if is_pixel { 10.0 } else { 1.0 };
             unsafe {
-                ffi::ghostty_surface_mouse_scroll(surface, dx, dy, scroll_mods);
+                ffi::ghostty_surface_mouse_scroll(
+                    surface,
+                    -dx * multiplier,
+                    -dy * multiplier,
+                    scroll_mods,
+                );
             }
             gtk4::glib::Propagation::Stop
         }
