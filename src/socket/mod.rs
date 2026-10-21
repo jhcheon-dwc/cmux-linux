@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod commands;
 pub mod handlers;
+pub mod keys; // socket-cli
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -214,6 +215,8 @@ async fn dispatch_line(
         "surface.read_text" => commands::SocketCommand::SurfaceReadText {
             req_id: req_id.clone(),
             id: params.get("id").and_then(|v| v.as_str()).map(String::from),
+            lines: params.get("lines").and_then(|v| v.as_u64()).map(|n| n as usize),
+            scrollback: params.get("scrollback").and_then(|v| v.as_bool()).unwrap_or(false),
             resp_tx,
         },
         "surface.health" => commands::SocketCommand::SurfaceHealth {
@@ -300,6 +303,20 @@ async fn dispatch_line(
         },
         "surface.find_close" => commands::SocketCommand::SurfaceFindClose { req_id: req_id.clone(), resp_tx },
         "surface.find_status" => commands::SocketCommand::SurfaceFindStatus { req_id: req_id.clone(), resp_tx },
+        // socket-cli
+        "surface.paste" => commands::SocketCommand::SurfacePaste {
+            req_id: req_id.clone(),
+            id: params.get("id").and_then(|v| v.as_str()).map(String::from),
+            text: params.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            submit: params.get("submit").and_then(|v| v.as_bool()).unwrap_or(false),
+            resp_tx,
+        },
+        "surface.read_selection" => commands::SocketCommand::SurfaceReadSelection {
+            req_id: req_id.clone(),
+            id: params.get("id").and_then(|v| v.as_str()).map(String::from),
+            resp_tx,
+        },
+        "surface.current" => commands::SocketCommand::SurfaceCurrent { req_id: req_id.clone(), resp_tx },
 
         // Route all other browser.* methods to the generic proxy (P0/P1 parity)
         _ if method.starts_with("browser.") => {

@@ -47,6 +47,9 @@ pub struct AppState {
     pub browser_surface_refs: std::collections::HashMap<u32, String>,
     /// Weak self-reference, handed to sidebar row callbacks (agent-status).
     self_weak: std::rc::Weak<RefCell<AppState>>,
+    // socket-cli
+    /// UUID of the previously active workspace (backs workspace.last).
+    pub previous_workspace: Option<uuid::Uuid>,
 }
 
 impl AppState {
@@ -79,6 +82,7 @@ impl AppState {
             browser_surface_counter: 0,
             browser_surface_refs: std::collections::HashMap::new(),
             self_weak: self_weak.clone(),
+            previous_workspace: None, // socket-cli
         }))
     }
 
@@ -346,6 +350,10 @@ impl AppState {
     pub fn switch_to_index(&mut self, index: usize) {
         if index >= self.workspaces.len() {
             return;
+        }
+        // socket-cli: remember the previously active workspace for workspace.last.
+        if index != self.active_index {
+            self.previous_workspace = self.workspaces.get(self.active_index).map(|ws| ws.uuid);
         }
         // Phase 4: clear attention when user switches to a workspace (D-05).
         self.clear_workspace_attention(index);

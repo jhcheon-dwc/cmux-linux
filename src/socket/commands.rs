@@ -32,7 +32,9 @@ pub enum SocketCommand {
     SurfaceClose     { req_id: Value, id: String, resp_tx: RespTx },
     SurfaceSendText  { req_id: Value, id: Option<String>, text: String, resp_tx: RespTx },
     SurfaceSendKey   { req_id: Value, id: Option<String>, key: String, resp_tx: RespTx },
-    SurfaceReadText  { req_id: Value, id: Option<String>, resp_tx: RespTx },
+    /// `lines`: last N lines of scrollback+screen; `scrollback`: whole buffer;
+    /// neither: the visible viewport.
+    SurfaceReadText  { req_id: Value, id: Option<String>, lines: Option<usize>, scrollback: bool, resp_tx: RespTx },
     SurfaceHealth    { req_id: Value, id: Option<String>, resp_tx: RespTx },
     SurfaceRefresh   { req_id: Value, id: Option<String>, resp_tx: RespTx },
 
@@ -61,6 +63,13 @@ pub enum SocketCommand {
 
     // -- browser.* generic proxy (P0/P1 parity) --
     BrowserAction    { req_id: Value, action: String, params: Value, surface_ref: Option<String>, resp_tx: RespTx },
+
+    // socket-cli
+    /// Paste text (bracketed paste); `submit` sends Enter afterwards.
+    SurfacePaste         { req_id: Value, id: Option<String>, text: String, submit: bool, resp_tx: RespTx },
+    SurfaceReadSelection { req_id: Value, id: Option<String>, resp_tx: RespTx },
+    /// Focused workspace / pane / surface identity.
+    SurfaceCurrent       { req_id: Value, resp_tx: RespTx },
 
     // -- Tier-2 stub (not_implemented) --
     NotImplemented   { req_id: Value, method: String, resp_tx: RespTx },

@@ -120,27 +120,37 @@ pub enum Commands {
         /// Surface UUID
         id: String,
     },
-    /// Send text to a surface
+    /// Send text to a surface as typed input ("\n" = Enter, "\t" = Tab, "\\" = backslash)
+    #[command(alias = "send")]
     SendText {
         /// Text to send
         text: String,
-        /// Target surface ID (default: focused)
-        #[arg(long)]
+        /// Target surface ID (default: focused; any workspace)
+        #[arg(long, alias = "surface")]
         id: Option<String>,
+        /// Paste the text (bracketed paste) instead of typing it
+        #[arg(long)]
+        paste: bool,
     },
-    /// Send a key event to a surface
+    /// Send a key event to a surface (e.g. enter, ctrl+c, alt+x, ctrl+shift+t, up, f5)
     SendKey {
-        /// Key descriptor
+        /// Key descriptor: [ctrl+][shift+][alt+][super+]<key>
         key: String,
-        /// Target surface ID (default: focused)
-        #[arg(long)]
+        /// Target surface ID (default: focused; any workspace)
+        #[arg(long, alias = "surface")]
         id: Option<String>,
     },
-    /// Read text from a surface
+    /// Read text from a surface (default: the visible screen)
     ReadText {
-        /// Target surface ID (default: focused)
-        #[arg(long)]
+        /// Target surface ID (default: focused; any workspace)
+        #[arg(long, alias = "surface")]
         id: Option<String>,
+        /// Only the last N lines (includes scrollback)
+        #[arg(long, short = 'n')]
+        lines: Option<usize>,
+        /// Include the whole scrollback
+        #[arg(long)]
+        scrollback: bool,
     },
     /// Check surface health
     Health {
@@ -249,6 +259,27 @@ pub enum Commands {
         /// Hook event name (UserPromptSubmit, PreToolUse, Notification, Stop, ...)
         event: String,
     },
+    // socket-cli
+    /// Paste text into a surface (bracketed paste); same escapes as send-text
+    Paste {
+        /// Text to paste
+        text: String,
+        /// Target surface ID (default: focused; any workspace)
+        #[arg(long, alias = "surface")]
+        id: Option<String>,
+        /// Press Enter after pasting
+        #[arg(long)]
+        submit: bool,
+    },
+    /// Print the current selection of a surface
+    ReadSelection {
+        /// Target surface ID (default: focused; any workspace)
+        #[arg(long, alias = "surface")]
+        id: Option<String>,
+    },
+    /// Show the focused workspace, pane and surface
+    Current,
+
 }
 
 /// Browser subcommands for `cmux browser <action>` / `cmux browser <surface> <action>`.
@@ -657,13 +688,14 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
         }
         Commands::FocusSurface { id } => ("surface.focus", json!({"id": id})),
         Commands::CloseSurface { id } => ("surface.close", json!({"id": id})),
-        Commands::SendText { text, id } => {
+        Commands::SendText { text, id, paste } => {
             let mut p = serde_json::Map::new();
-            p.insert("text".into(), json!(text));
+            p.insert("text".into(), json!(unescape_text(text)));
             if let Some(ref id) = id {
                 p.insert("id".into(), json!(id));
             }
-            ("surface.send_text", Value::Object(p))
+            let method = if *paste { "surface.paste" } else { "surface.send_text" };
+            (method, Value::Object(p))
         }
         Commands::SendKey { key, id } => {
             let mut p = serde_json::Map::new();
@@ -673,10 +705,16 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
             }
             ("surface.send_key", Value::Object(p))
         }
-        Commands::ReadText { id } => {
+        Commands::ReadText { id, lines, scrollback } => {
             let mut p = serde_json::Map::new();
             if let Some(ref id) = id {
                 p.insert("id".into(), json!(id));
+            }
+            if let Some(n) = lines {
+                p.insert("lines".into(), json!(n));
+            }
+            if *scrollback {
+                p.insert("scrollback".into(), json!(true));
             }
             ("surface.read_text", Value::Object(p))
         }
@@ -737,6 +775,26 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
             }
             ("notification.create", Value::Object(p))
         }
+        // socket-cli
+        Commands::Paste { text, id, submit } => {
+            let mut p = serde_json::Map::new();
+            p.insert("text".into(), json!(unescape_text(text)));
+            if let Some(ref id) = id {
+                p.insert("id".into(), json!(id));
+            }
+            if *submit {
+                p.insert("submit".into(), json!(true));
+            }
+            ("surface.paste", Value::Object(p))
+        }
+        Commands::ReadSelection { id } => {
+            let mut p = serde_json::Map::new();
+            if let Some(ref id) = id {
+                p.insert("id".into(), json!(id));
+            }
+            ("surface.read_selection", Value::Object(p))
+        }
+        Commands::Current => ("surface.current", json!({})),
         // agent-status
         Commands::SetStatus { state, message, workspace, surface } => {
             ("workspace.set_status", set_status_params(
@@ -849,6 +907,32 @@ fn run_claude_hook(event: &str, socket_override: Option<&str>) {
     let _ = client.call("workspace.set_status", params);
 }
 
+/// Expand C-style escapes in text arguments: \n (Enter), \r, \t, \e (Escape),
+/// \\ (backslash). Unknown escapes are kept verbatim.
+fn unescape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('e') => out.push('\x1b'),
+            Some('\\') => out.push('\\'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -880,5 +964,79 @@ mod tests {
             _ => panic!("expected SetStatus"),
         }
         assert!(Cli::try_parse_from(["cmux", "claude-hook", "Stop"]).is_ok());
+    }
+
+    fn rpc(args: &[&str]) -> (&'static str, serde_json::Value) {
+        let mut argv = vec!["cmux"];
+        argv.extend_from_slice(args);
+        let cli = Cli::try_parse_from(argv).expect("parse");
+        command_to_rpc(&cli.command)
+    }
+
+    #[test]
+    fn send_text_is_typed_input_with_escapes() {
+        assert_eq!(
+            rpc(&["send-text", "echo 한글\\n"]),
+            ("surface.send_text", json!({"text": "echo 한글\n"}))
+        );
+        // `send` alias + --surface alias + --paste switches to surface.paste.
+        assert_eq!(
+            rpc(&["send", "--surface", "abcd", "--paste", "x\\ty"]),
+            ("surface.paste", json!({"text": "x\ty", "id": "abcd"}))
+        );
+    }
+
+    #[test]
+    fn paste_submit() {
+        assert_eq!(
+            rpc(&["paste", "--surface", "u1", "--submit", "ls"]),
+            ("surface.paste", json!({"text": "ls", "id": "u1", "submit": true}))
+        );
+        assert_eq!(rpc(&["paste", "ls"]), ("surface.paste", json!({"text": "ls"})));
+    }
+
+    #[test]
+    fn send_key_and_read() {
+        assert_eq!(
+            rpc(&["send-key", "ctrl+c", "--id", "u2"]),
+            ("surface.send_key", json!({"key": "ctrl+c", "id": "u2"}))
+        );
+        assert_eq!(rpc(&["read-text"]), ("surface.read_text", json!({})));
+        assert_eq!(
+            rpc(&["read-text", "--lines", "5", "--scrollback"]),
+            ("surface.read_text", json!({"lines": 5, "scrollback": true}))
+        );
+        assert_eq!(
+            rpc(&["read-selection", "--surface", "u3"]),
+            ("surface.read_selection", json!({"id": "u3"}))
+        );
+    }
+
+    #[test]
+    fn workspace_and_misc_commands() {
+        assert_eq!(rpc(&["current"]), ("surface.current", json!({})));
+        assert_eq!(rpc(&["last-workspace"]), ("workspace.last", json!({})));
+        assert_eq!(
+            rpc(&["rename-workspace", "w1", "새 이름"]),
+            ("workspace.rename", json!({"id": "w1", "name": "새 이름"}))
+        );
+        assert_eq!(
+            rpc(&["reorder-workspace", "w1", "2"]),
+            ("workspace.reorder", json!({"id": "w1", "position": 2}))
+        );
+        assert_eq!(
+            rpc(&["split", "--direction", "vertical", "--id", "s1"]),
+            ("surface.split", json!({"direction": "vertical", "id": "s1"}))
+        );
+    }
+
+    #[test]
+    fn unescape() {
+        assert_eq!(unescape_text("a\\nb"), "a\nb");
+        assert_eq!(unescape_text("\\e[A"), "\x1b[A");
+        assert_eq!(unescape_text("c:\\\\x"), "c:\\x");
+        assert_eq!(unescape_text("keep \\q"), "keep \\q");
+        assert_eq!(unescape_text("trailing\\"), "trailing\\");
+        assert_eq!(unescape_text("한글"), "한글");
     }
 }

@@ -35,6 +35,160 @@ fn resolve_surface_ref(
     Ok(surface_ref.to_string())
 }
 
+// ── socket-cli: surface resolution + terminal I/O helpers ───────────────────
+
+// Exported by libghostty (cmux fork) but not declared in ghostty.h: committed
+// typed-text input (no bracketed paste, newlines normalized to CR).
+unsafe extern "C" {
+    fn ghostty_surface_text_input(
+        surface: crate::ghostty::ffi::ghostty_surface_t,
+        text: *const std::os::raw::c_char,
+        len: usize,
+    );
+}
+
+/// Find (workspace index, pane_id) for a pane/surface UUID across ALL workspaces.
+/// pane_id is only unique within one workspace, so callers must keep the pair.
+/// Accepts a full UUID or a unique prefix (the CLI lists show 8-char short ids).
+fn locate_pane(s: &crate::app_state::AppState, target: &str) -> Option<(usize, u64)> {
+    let mut prefix_hit: Option<(usize, u64)> = None;
+    let mut prefix_hits = 0;
+    for (ws_idx, engine) in s.split_engines.iter().enumerate() {
+        for (uuid, pane_id, _) in engine.all_panes() {
+            let u = uuid.to_string();
+            if u == target {
+                return Some((ws_idx, pane_id));
+            }
+            if target.len() >= 4 && u.starts_with(target) {
+                prefix_hit = Some((ws_idx, pane_id));
+                prefix_hits += 1;
+            }
+        }
+    }
+    if prefix_hits == 1 { prefix_hit } else { None }
+}
+
+/// Resolve the target pane: an explicit UUID (any workspace) or the focused pane
+/// of the active workspace.
+fn resolve_pane(s: &crate::app_state::AppState, id: Option<&str>) -> Result<(usize, u64), String> {
+    match id {
+        Some(target) => locate_pane(s, target).ok_or_else(|| format!("surface {target} not found")),
+        None => {
+            let engine = s.split_engines.get(s.active_index).ok_or("no active workspace")?;
+            let pid = engine.root.find_active_pane_id().unwrap_or(engine.active_pane_id);
+            Ok((s.active_index, pid))
+        }
+    }
+}
+
+/// Resolve `id` (or the focused pane) all the way to a live surface.
+fn resolve_surface(
+    s: &crate::app_state::AppState,
+    id: Option<&str>,
+) -> Result<crate::ghostty::ffi::ghostty_surface_t, String> {
+    let (ws_idx, pid) = resolve_pane(s, id)?;
+    s.split_engines.get(ws_idx)
+        .and_then(|engine| engine.find_surface(pid))
+        .ok_or_else(|| "surface not ready (terminal not realized yet)".to_string())
+}
+
+/// Send one key press + release to a surface.
+fn send_key_to_surface(surface: crate::ghostty::ffi::ghostty_surface_t, spec: &crate::socket::keys::KeySpec) {
+    use crate::ghostty::ffi;
+    let mut input = unsafe { std::mem::zeroed::<ffi::ghostty_input_key_s>() };
+    input.keycode = spec.keycode;
+    input.mods = spec.mods;
+    input.consumed_mods = 0;
+    input.text = spec.text_ptr();
+    input.unshifted_codepoint = spec.unshifted_codepoint;
+    input.composing = false;
+    input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_PRESS;
+    unsafe { ffi::ghostty_surface_key(surface, input) };
+    input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_RELEASE;
+    input.text = std::ptr::null();
+    unsafe { ffi::ghostty_surface_key(surface, input) };
+}
+
+/// Read the whole region of `tag` (viewport or full screen incl. scrollback)
+/// from a surface as UTF-8 (lossy on invalid bytes).
+fn read_surface_text(
+    surface: crate::ghostty::ffi::ghostty_surface_t,
+    tag: crate::ghostty::ffi::ghostty_point_tag_e,
+) -> Option<String> {
+    use crate::ghostty::ffi;
+    let point = |coord| ffi::ghostty_point_s { tag, coord, x: 0, y: 0 };
+    let sel = ffi::ghostty_selection_s {
+        top_left: point(ffi::ghostty_point_coord_e_GHOSTTY_POINT_COORD_TOP_LEFT),
+        bottom_right: point(ffi::ghostty_point_coord_e_GHOSTTY_POINT_COORD_BOTTOM_RIGHT),
+        rectangle: false,
+    };
+    let mut text = unsafe { std::mem::zeroed::<ffi::ghostty_text_s>() };
+    if !unsafe { ffi::ghostty_surface_read_text(surface, sel, &mut text) } {
+        return None;
+    }
+    Some(take_ghostty_text(surface, &mut text))
+}
+
+/// Copy a ghostty_text_s into a String and free it.
+fn take_ghostty_text(
+    surface: crate::ghostty::ffi::ghostty_surface_t,
+    text: &mut crate::ghostty::ffi::ghostty_text_s,
+) -> String {
+    let out = if text.text.is_null() || text.text_len == 0 {
+        String::new()
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(text.text as *const u8, text.text_len as usize) };
+        String::from_utf8_lossy(bytes).into_owned()
+    };
+    unsafe { crate::ghostty::ffi::ghostty_surface_free_text(surface, text) };
+    out
+}
+
+/// Keep the last `n` lines of `text`, ignoring trailing blank lines (the unused
+/// rows below the prompt).
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map(|i| i + 1).unwrap_or(0);
+    let start = end.saturating_sub(n);
+    lines[start..end].join("\n")
+}
+
+/// After a socket command touched a pane in the background workspace `ws_idx`:
+/// drop the Ghostty focus the operation gave that workspace's pane, optionally make
+/// `prev` its active pane again, and bring the visible page and GTK/Ghostty focus
+/// back to the active workspace (split/close re-show their own stack page and
+/// grab focus).
+fn restore_visible_workspace(s: &mut crate::app_state::AppState, ws_idx: usize, prev: Option<u64>) {
+    use crate::ghostty::ffi;
+    if let Some(engine) = s.split_engines.get_mut(ws_idx) {
+        if let Some(surf) = engine.find_surface(engine.active_pane_id) {
+            unsafe { ffi::ghostty_surface_set_focus(surf, false) };
+        }
+        if let Some(p) = prev.filter(|&p| engine.root.find_uuid_for_pane(p).is_some()) {
+            engine.active_pane_id = p;
+            engine.root.update_focus_css(p);
+        }
+    }
+    let active = s.active_index;
+    if let Some(page) = s.workspaces.get(active).map(|ws| ws.stack_page_name.clone()) {
+        s.stack.set_visible_child_name(&page);
+    }
+    if let Some(engine) = s.split_engines.get(active) {
+        if let Some(surf) = engine.find_surface(engine.active_pane_id) {
+            unsafe { ffi::ghostty_surface_set_focus(surf, true) };
+        }
+        engine.grab_active_focus();
+    }
+}
+
+/// `{"id", "title"}` of the active workspace (result of the workspace switch commands).
+fn active_workspace_json(s: &crate::app_state::AppState) -> Value {
+    match s.active_workspace() {
+        Some(ws) => json!({"id": ws.uuid.to_string(), "title": ws.name}),
+        None => json!({}),
+    }
+}
+
 /// Dispatch a SocketCommand on the GTK main thread.
 /// SOCK-05: Only focus-intent commands (workspace.select, workspace.next/previous/last,
 /// pane.focus, pane.last, surface.focus) may call grab_active_focus() or focus_active_surface().
@@ -113,6 +267,8 @@ pub fn handle_socket_command(
                 "surface.find", "surface.find_next", "surface.find_close", "surface.find_status",
                 // agent-status
                 "workspace.set_status",
+                // socket-cli
+                "surface.paste", "surface.read_selection", "surface.current",
             ];
             let _ = resp_tx.send(ok(req_id, json!({"methods": methods})));
         }
@@ -132,6 +288,7 @@ pub fn handle_socket_command(
                     "status_message": ws.agent_status.as_ref().and_then(|st| st.message.clone()),
                     "unread": ws.has_attention,
                     "progress": ws.progress.map(|(st, v)| json!({"state": st.as_str(), "value": v})),
+                    "pane_count": s.split_engines.get(i).map(|e| e.all_panes().len()).unwrap_or(0),
                 })
             }).collect();
             let _ = resp_tx.send(ok(req_id, json!({"workspaces": list})));
@@ -142,9 +299,13 @@ pub fn handle_socket_command(
             let s = state.borrow();
             match s.active_workspace() {
                 Some(ws) => {
+                    // `id`/`title` match workspace.list; `uuid`/`name` kept for compatibility.
                     let _ = resp_tx.send(ok(req_id, json!({
+                        "id": ws.uuid.to_string(),
+                        "title": ws.name,
                         "uuid": ws.uuid.to_string(),
                         "name": ws.name,
+                        "index": s.active_index,
                     })));
                 }
                 None => {
@@ -177,7 +338,7 @@ pub fn handle_socket_command(
                     let handle = rt.spawn(crate::ssh::tunnel::run_ssh_lifecycle(id, target, tx, bridge));
                     state.borrow_mut().ssh_task_handles.insert(id, handle);
                 }
-                let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid_str, "remote": true})));
+                let _ = resp_tx.send(ok(req_id, json!({"id": uuid_str, "uuid": uuid_str, "remote": true})));
             } else {
                 // Local workspace (existing behavior)
                 let id = state.borrow_mut().create_workspace();
@@ -186,7 +347,7 @@ pub fn handle_socket_command(
                     .find(|ws| ws.id == id)
                     .map(|ws| ws.uuid.to_string())
                     .unwrap_or_default();
-                let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid_str})));
+                let _ = resp_tx.send(ok(req_id, json!({"id": uuid_str, "uuid": uuid_str})));
             }
         }
 
@@ -199,7 +360,7 @@ pub fn handle_socket_command(
             match idx {
                 Some(i) => {
                     state.borrow_mut().switch_to_index(i);
-                    let _ = resp_tx.send(ok(req_id, json!({})));
+                    let _ = resp_tx.send(ok(req_id, active_workspace_json(&state.borrow())));
                 }
                 None => {
                     let _ = resp_tx.send(err(req_id, "not_found", "workspace not found"));
@@ -217,7 +378,7 @@ pub fn handle_socket_command(
                 Some(i) => {
                     let closed = state.borrow_mut().close_workspace(i);
                     if closed {
-                        let _ = resp_tx.send(ok(req_id, json!({})));
+                        let _ = resp_tx.send(ok(req_id, json!({"id": id})));
                     } else {
                         let _ = resp_tx.send(err(req_id, "last_workspace", "cannot close the last workspace"));
                     }
@@ -229,8 +390,8 @@ pub fn handle_socket_command(
         }
 
         SocketCommand::WorkspaceRename { req_id, id, name, resp_tx } => {
-            // SOCK-05: No focus side effects. Find workspace by uuid, switch to it
-            // (rename_active requires the target to be active), then rename.
+            // SOCK-05: No focus side effects. Rename in place (no workspace switch,
+            // so attention state and focus history are untouched).
             let idx = {
                 let s = state.borrow();
                 s.workspaces.iter().position(|ws| ws.uuid.to_string() == id)
@@ -241,8 +402,9 @@ pub fn handle_socket_command(
                     let mut s = state.borrow_mut();
                     let ws_id = s.workspaces[i].id;
                     s.rename_workspace(ws_id, name);
+                    let label = s.workspaces[i].name.clone();
                     drop(s);
-                    let _ = resp_tx.send(ok(req_id, json!({})));
+                    let _ = resp_tx.send(ok(req_id, json!({"id": id, "name": label, "title": label})));
                 }
                 None => {
                     let _ = resp_tx.send(err(req_id, "not_found", "workspace not found"));
@@ -253,20 +415,35 @@ pub fn handle_socket_command(
         SocketCommand::WorkspaceNext { req_id, resp_tx } => {
             // SOCK-05: focus-intent command.
             state.borrow_mut().switch_next();
-            let _ = resp_tx.send(ok(req_id, json!({})));
+            let _ = resp_tx.send(ok(req_id, active_workspace_json(&state.borrow())));
         }
 
         SocketCommand::WorkspacePrev { req_id, resp_tx } => {
             // SOCK-05: focus-intent command.
             state.borrow_mut().switch_prev();
-            let _ = resp_tx.send(ok(req_id, json!({})));
+            let _ = resp_tx.send(ok(req_id, active_workspace_json(&state.borrow())));
         }
 
         SocketCommand::WorkspaceLast { req_id, resp_tx } => {
             // SOCK-05: focus-intent command.
-            // "Last" = most recently visited; for now same as prev (Phase 4 can track history).
-            state.borrow_mut().switch_prev();
-            let _ = resp_tx.send(ok(req_id, json!({})));
+            // "Last" = most recently active workspace (recorded by switch_to_index), so
+            // repeated calls toggle between two workspaces.
+            let target = {
+                let s = state.borrow();
+                s.previous_workspace.and_then(|uuid| {
+                    s.workspaces.iter().position(|ws| ws.uuid == uuid)
+                        .filter(|&i| i != s.active_index)
+                })
+            };
+            match target {
+                Some(i) => {
+                    state.borrow_mut().switch_to_index(i);
+                    let _ = resp_tx.send(ok(req_id, active_workspace_json(&state.borrow())));
+                }
+                None => {
+                    let _ = resp_tx.send(err(req_id, "no_history", "no previously active workspace"));
+                }
+            }
         }
 
         SocketCommand::WorkspaceReorder { req_id, id, position, resp_tx } => {
@@ -285,6 +462,14 @@ pub fn handle_socket_command(
                     }
                     s.workspaces.insert(to, ws);
                     s.split_engines.insert(to, engine);
+                    // Move the sidebar row too. Sidebar handlers look rows up via
+                    // row.index(), so moving the row keeps clicks/close buttons correct.
+                    if from != to {
+                        if let Some(row) = s.sidebar_list.row_at_index(from as i32) {
+                            s.sidebar_list.remove(&row);
+                            s.sidebar_list.insert(&row, to as i32);
+                        }
+                    }
                     // Adjust active_index after reorder.
                     if from == s.active_index {
                         s.active_index = to;
@@ -297,8 +482,9 @@ pub fn handle_socket_command(
                     if let Some(row) = s.workspaces.get(s.active_index).and_then(|w| w.sidebar_row.as_ref()) {
                         s.sidebar_list.select_row(Some(&row.row));
                     }
+                    s.trigger_session_save();
                     drop(s);
-                    let _ = resp_tx.send(ok(req_id, json!({})));
+                    let _ = resp_tx.send(ok(req_id, json!({"id": id, "position": to})));
                 }
                 None => {
                     drop(s);
@@ -339,24 +525,20 @@ pub fn handle_socket_command(
 
         SocketCommand::DebugType { req_id, text, resp_tx } => {
             // SOCK-05: No focus side effects (sends text to active surface without changing focus).
-            let s = state.borrow();
-            if let Some(engine) = s.split_engines.get(s.active_index) {
-                if let Some(pane_id) = engine.root.find_active_pane_id() {
-                    if let Some(surface) = engine.root.find_surface_for_pane(pane_id) {
-                        if !surface.is_null() {
-                            let c_text = std::ffi::CString::new(text.clone()).unwrap_or_default();
-                            unsafe {
-                                crate::ghostty::ffi::ghostty_surface_text(
-                                    surface,
-                                    c_text.as_ptr(),
-                                    c_text.to_bytes().len(),
-                                );
-                            }
-                        }
+            let surface = resolve_surface(&state.borrow(), None);
+            match surface {
+                Ok(surf) => {
+                    unsafe {
+                        crate::ghostty::ffi::ghostty_surface_text(
+                            surf,
+                            text.as_ptr() as *const _,
+                            text.len(),
+                        );
                     }
+                    let _ = resp_tx.send(ok(req_id, json!({})));
                 }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
         // ── surface.* ────────────────────────────────────────────────────
@@ -382,53 +564,72 @@ pub fn handle_socket_command(
             let _ = resp_tx.send(ok(req_id, json!({"surfaces": panes})));
         }
 
-        SocketCommand::SurfaceSplit { req_id, id: _, direction, resp_tx } => {
-            // Split the active pane in the active workspace.
-            // SplitEngine::split_active splits by orientation and returns new pane_id.
-            let orientation = if direction == "vertical" {
-                gtk4::Orientation::Vertical
-            } else {
-                gtk4::Orientation::Horizontal
+        SocketCommand::SurfaceSplit { req_id, id, direction, resp_tx } => {
+            // Split the pane named by `id` (any workspace), or the focused pane of the
+            // active workspace. SplitEngine::split_active splits by orientation and
+            // returns the new pane_id.
+            // macOS direction names are accepted too; the new pane always goes
+            // after (right of / below) the target.
+            let orientation = match direction.as_str() {
+                "vertical" | "down" | "up" => gtk4::Orientation::Vertical,
+                "horizontal" | "right" | "left" => gtk4::Orientation::Horizontal,
+                other => {
+                    let msg = format!("invalid direction '{other}' (horizontal, vertical, right, down)");
+                    let _ = resp_tx.send(err(req_id, "invalid_params", &msg));
+                    return;
+                }
             };
             let result = {
                 let mut s = state.borrow_mut();
-                let idx = s.active_index;
-                if let Some(engine) = s.split_engines.get_mut(idx) {
-                    engine.split_active(orientation)
-                        .and_then(|new_pane_id| {
-                            // Find the uuid of the newly created pane.
-                            engine.all_panes().into_iter()
-                                .find(|(_, pid, _)| *pid == new_pane_id)
-                                .map(|(uuid, _, _)| uuid.to_string())
-                        })
-                } else {
-                    None
+                match resolve_pane(&s, id.as_deref()) {
+                    Err(e) => Err(("not_found", e)),
+                    Ok((ws_idx, pid)) => {
+                        let background = ws_idx != s.active_index;
+                        let engine = &mut s.split_engines[ws_idx];
+                        // split_active inherits config from the active pane's surface; make
+                        // sure the tree holds live pointers (they may still be null).
+                        engine.sync_surfaces_from_registry();
+                        if engine.active_pane_id != pid {
+                            if background {
+                                engine.active_pane_id = pid;
+                                engine.root.update_focus_css(pid);
+                            } else {
+                                engine.focus_pane(pid);
+                            }
+                        }
+                        let r = engine.split_active(orientation)
+                            .and_then(|new_pane_id| engine.root.find_uuid_for_pane(new_pane_id))
+                            .ok_or(("split_failed", "could not split pane".to_string()));
+                        if background {
+                            // The new pane becomes that workspace's active pane, but the
+                            // user stays where they are.
+                            restore_visible_workspace(&mut s, ws_idx, None);
+                        }
+                        r
+                    }
                 }
             };
             match result {
-                Some(uuid_str) => {
-                    let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid_str})));
+                Ok(uuid_str) => {
+                    let _ = resp_tx.send(ok(req_id, json!({"id": uuid_str, "uuid": uuid_str})));
                 }
-                None => {
-                    let _ = resp_tx.send(err(req_id, "split_failed", "could not split pane"));
+                Err((code, msg)) => {
+                    let _ = resp_tx.send(err(req_id, code, &msg));
                 }
             }
         }
 
         SocketCommand::SurfaceFocus { req_id, id, resp_tx } => {
-            // SOCK-05: surface.focus IS a focus-intent command — allowed to change focus.
-            let pane_id = {
-                let s = state.borrow();
-                s.split_engines.get(s.active_index)
-                    .and_then(|engine| engine.find_pane_id_by_uuid(&id))
-            };
-            match pane_id {
-                Some(pid) => {
-                    let mut s = state.borrow_mut();
-                    let idx = s.active_index;
-                    if let Some(engine) = s.split_engines.get_mut(idx) {
-                        engine.focus_pane(pid);
+            // SOCK-05: surface.focus IS a focus-intent command — allowed to change focus,
+            // including switching to the workspace that owns the surface.
+            let target = locate_pane(&state.borrow(), &id);
+            match target {
+                Some((ws_idx, pid)) => {
+                    if ws_idx != state.borrow().active_index {
+                        state.borrow_mut().switch_to_index(ws_idx);
                     }
+                    let mut s = state.borrow_mut();
+                    s.split_engines[ws_idx].focus_pane(pid);
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
                 }
@@ -437,29 +638,38 @@ pub fn handle_socket_command(
         }
 
         SocketCommand::SurfaceClose { req_id, id, resp_tx } => {
-            // Close pane by uuid. Set it as active, then close_active().
-            let pane_id = {
-                let s = state.borrow();
-                s.split_engines.get(s.active_index)
-                    .and_then(|engine| engine.find_pane_id_by_uuid(&id))
-            };
-            match pane_id {
-                Some(pid) => {
+            // Close pane by uuid (any workspace). Set it as active, then close_active().
+            let target = locate_pane(&state.borrow(), &id);
+            match target {
+                Some((ws_idx, pid)) => {
+                    // SOCK-05: not focus-intent. close_active() moves focus to the
+                    // closed pane's sibling, so put the user's focus back afterwards.
                     let result = {
                         let mut s = state.borrow_mut();
-                        let idx = s.active_index;
-                        if let Some(engine) = s.split_engines.get_mut(idx) {
-                            // Through focus_pane so the previously active pane
-                            // stays in the focus history.
-                            engine.focus_pane(pid);
-                            engine.close_active()
-                        } else {
-                            None
+                        let background = ws_idx != s.active_index;
+                        let engine = &mut s.split_engines[ws_idx];
+                        let orig = engine.active_pane_id;
+                        let prev = Some(orig).filter(|&p| p != pid);
+                        engine.sync_surfaces_from_registry();
+                        engine.active_pane_id = pid;
+                        engine.root.update_focus_css(pid);
+                        let r = engine.close_active();
+                        if r.is_none() {
+                            engine.active_pane_id = orig;
+                            engine.root.update_focus_css(orig);
+                        } else if background {
+                            restore_visible_workspace(&mut s, ws_idx, prev);
+                        } else if let Some(p) = prev {
+                            engine.focus_pane(p);
                         }
+                        r
                     };
                     match result {
-                        Some(_) => { let _ = resp_tx.send(ok(req_id, json!({}))); }
-                        None => { let _ = resp_tx.send(err(req_id, "close_failed", "cannot close last pane")); }
+                        Some(_) => { let _ = resp_tx.send(ok(req_id, json!({"id": id}))); }
+                        None => {
+                            let msg = "cannot close pane (last pane, or its terminal is not realized yet)";
+                            let _ = resp_tx.send(err(req_id, "close_failed", msg));
+                        }
                     }
                 }
                 None => { let _ = resp_tx.send(err(req_id, "not_found", "surface not found")); }
@@ -468,88 +678,87 @@ pub fn handle_socket_command(
 
         SocketCommand::SurfaceSendText { req_id, id, text, resp_tx } => {
             // SOCK-05: send_text is NOT a focus-intent command — NO focus change.
-            let surface = {
-                let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        engine.find_surface_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                            .and_then(|pid| engine.root.find_surface_for_pane(pid))
-                    }
-                } else { None }
-            };
-            if let Some(surf) = surface {
-                if !surf.is_null() {
-                    let c_text = std::ffi::CString::new(text.clone()).unwrap_or_default();
+            // Typed input (not a paste): no bracketed paste, "\n" becomes Enter.
+            let surface = resolve_surface(&state.borrow(), id.as_deref());
+            match surface {
+                Ok(surf) => {
                     unsafe {
-                        crate::ghostty::ffi::ghostty_surface_text(
-                            surf,
-                            c_text.as_ptr(),
-                            c_text.to_bytes().len(),
-                        );
+                        ghostty_surface_text_input(surf, text.as_ptr() as *const _, text.len());
                     }
+                    let _ = resp_tx.send(ok(req_id, json!({"bytes": text.len()})));
                 }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
         SocketCommand::SurfaceSendKey { req_id, id, key, resp_tx } => {
             // SOCK-05: send_key is NOT a focus-intent command — NO focus change.
-            // For Phase 3, single printable chars sent as text.
-            // Complex key combos (ctrl+c, etc.) require ghostty_surface_key — Phase 4.
-            let surface = {
-                let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        engine.find_surface_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                            .and_then(|pid| engine.root.find_surface_for_pane(pid))
-                    }
-                } else { None }
-            };
-            if let Some(surf) = surface {
-                if !surf.is_null() && key.len() == 1 {
-                    let c_key = std::ffi::CString::new(key.clone()).unwrap_or_default();
-                    unsafe {
-                        crate::ghostty::ffi::ghostty_surface_text(
-                            surf,
-                            c_key.as_ptr(),
-                            c_key.to_bytes().len(),
-                        );
-                    }
+            // Descriptor: "enter", "ctrl+c", "alt+x", "ctrl+shift+t", "f5", "a", ...
+            let spec = match crate::socket::keys::parse_key_descriptor(&key) {
+                Ok(spec) => spec,
+                Err(e) => {
+                    let _ = resp_tx.send(err(req_id, "invalid_params", &e));
+                    return;
                 }
+            };
+            let surface = resolve_surface(&state.borrow(), id.as_deref());
+            match surface {
+                Ok(surf) => {
+                    send_key_to_surface(surf, &spec);
+                    let _ = resp_tx.send(ok(req_id, json!({"key": key})));
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
-        SocketCommand::SurfaceReadText { req_id, id: _, resp_tx } => {
+        SocketCommand::SurfaceReadText { req_id, id, lines, scrollback, resp_tx } => {
             // SOCK-05: No focus side effects.
-            // Stub — Ghostty screen buffer API not yet available. Phase 4.
-            let _ = resp_tx.send(ok(req_id, json!({"text": ""})));
+            // Default: visible viewport. `scrollback`: the whole screen (scrollback +
+            // active area). `lines`: the last N lines — from the active area when it
+            // holds enough, else from the whole screen (avoids copying a large
+            // scrollback on the main thread for the common "tail" case).
+            let surface = resolve_surface(&state.borrow(), id.as_deref());
+            match surface {
+                Ok(surf) => {
+                    use crate::ghostty::ffi;
+                    let text = match (lines, scrollback) {
+                        (Some(n), false) => read_surface_text(surf, ffi::ghostty_point_tag_e_GHOSTTY_POINT_ACTIVE)
+                            .map(|t| last_lines(&t, n))
+                            .filter(|t| t.lines().count() >= n)
+                            .or_else(|| {
+                                read_surface_text(surf, ffi::ghostty_point_tag_e_GHOSTTY_POINT_SCREEN)
+                                    .map(|t| last_lines(&t, n))
+                            }),
+                        (Some(n), true) => read_surface_text(surf, ffi::ghostty_point_tag_e_GHOSTTY_POINT_SCREEN)
+                            .map(|t| last_lines(&t, n)),
+                        (None, true) => read_surface_text(surf, ffi::ghostty_point_tag_e_GHOSTTY_POINT_SCREEN),
+                        (None, false) => read_surface_text(surf, ffi::ghostty_point_tag_e_GHOSTTY_POINT_VIEWPORT),
+                    };
+                    match text {
+                        Some(text) => { let _ = resp_tx.send(ok(req_id, json!({"text": text}))); }
+                        None => { let _ = resp_tx.send(err(req_id, "read_failed", "could not read surface text")); }
+                    }
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
+            }
         }
 
         SocketCommand::SurfaceHealth { req_id, id, resp_tx } => {
             // SOCK-05: health is NOT focus-intent — NO focus change.
-            let (found, has_attention) = {
-                let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    if let Some(ref uuid_str) = id {
-                        let alive = engine.find_surface_by_uuid(uuid_str).is_some();
-                        let attn = engine.find_pane_id_by_uuid(uuid_str)
-                            .map(|pid| engine.root.pane_has_attention(pid))
-                            .unwrap_or(false);
-                        (alive, attn)
-                    } else {
-                        let attn = engine.root.find_active_pane_id()
-                            .map(|pid| engine.root.pane_has_attention(pid))
-                            .unwrap_or(false);
-                        (true, attn)
-                    }
-                } else { (false, false) }
-            };
-            let _ = resp_tx.send(ok(req_id, json!({"alive": found, "has_attention": has_attention})));
+            let s = state.borrow();
+            match resolve_pane(&s, id.as_deref()) {
+                Ok((ws_idx, pid)) => {
+                    let engine = &s.split_engines[ws_idx];
+                    let alive = engine.find_surface(pid).is_some();
+                    let attn = engine.root.pane_has_attention(pid);
+                    let _ = resp_tx.send(ok(req_id, json!({"alive": alive, "has_attention": attn})));
+                }
+                // An explicit id that no longer exists: the surface is gone.
+                Err(_) if id.is_some() => {
+                    let _ = resp_tx.send(ok(req_id, json!({"alive": false, "has_attention": false})));
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
+            }
         }
 
         SocketCommand::SurfaceRefresh { req_id, id, resp_tx } => {
@@ -557,19 +766,18 @@ pub fn handle_socket_command(
             // Queue a render on the target surface's GLArea.
             let gl_area = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    let target_pane_id = if let Some(ref uuid_str) = id {
-                        engine.find_pane_id_by_uuid(uuid_str)
-                    } else {
-                        engine.root.find_active_pane_id()
-                    };
-                    target_pane_id.and_then(|pid| engine.gl_area_for_pane(pid))
-                } else { None }
+                resolve_pane(&s, id.as_deref())
+                    .map(|(ws_idx, pid)| s.split_engines[ws_idx].gl_area_for_pane(pid))
             };
-            if let Some(area) = gl_area {
-                area.queue_render();
+            match gl_area {
+                Ok(area) => {
+                    if let Some(area) = area {
+                        area.queue_render();
+                    }
+                    let _ = resp_tx.send(ok(req_id, json!({})));
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
         // ── pane.* ───────────────────────────────────────────────────────────
@@ -591,19 +799,27 @@ pub fn handle_socket_command(
 
         SocketCommand::PaneFocus { req_id, id, resp_tx } => {
             // SOCK-05: pane.focus IS focus-intent — allowed to change focus.
-            let pane_id = {
+            // With an id: focus that pane (switching workspace if needed).
+            // Without: cycle to the next pane in the active workspace.
+            let target = {
                 let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
-                    id.as_ref().and_then(|uuid_str| engine.find_pane_id_by_uuid(uuid_str))
-                } else { None }
+                match id.as_deref() {
+                    Some(uuid_str) => locate_pane(&s, uuid_str),
+                    None => s.split_engines.get(s.active_index).and_then(|engine| {
+                        let panes = engine.all_panes();
+                        let cur = panes.iter().position(|(_, pid, _)| *pid == engine.active_pane_id)?;
+                        let (_, next, _) = panes.get((cur + 1) % panes.len())?;
+                        Some((s.active_index, *next))
+                    }),
+                }
             };
-            match pane_id {
-                Some(pid) => {
-                    let mut s = state.borrow_mut();
-                    let idx = s.active_index;
-                    if let Some(engine) = s.split_engines.get_mut(idx) {
-                        engine.focus_pane(pid);
+            match target {
+                Some((ws_idx, pid)) => {
+                    if ws_idx != state.borrow().active_index {
+                        state.borrow_mut().switch_to_index(ws_idx);
                     }
+                    let mut s = state.borrow_mut();
+                    s.split_engines[ws_idx].focus_pane(pid);
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
                 }
@@ -897,6 +1113,62 @@ pub fn handle_socket_command(
             // SOCK-05: layout-only; does not move focus.
             crate::shortcuts::handle_equalize_splits(state);
             let _ = resp_tx.send(ok(req_id, json!({})));
+        }
+
+        // socket-cli
+        SocketCommand::SurfacePaste { req_id, id, text, submit, resp_tx } => {
+            // SOCK-05: NOT focus-intent. Paste semantics (bracketed paste when the
+            // program enabled it); `submit` presses Enter afterwards.
+            let surface = resolve_surface(&state.borrow(), id.as_deref());
+            match surface {
+                Ok(surf) => {
+                    unsafe {
+                        crate::ghostty::ffi::ghostty_surface_text(surf, text.as_ptr() as *const _, text.len());
+                    }
+                    if submit {
+                        if let Ok(enter) = crate::socket::keys::parse_key_descriptor("enter") {
+                            send_key_to_surface(surf, &enter);
+                        }
+                    }
+                    let _ = resp_tx.send(ok(req_id, json!({"bytes": text.len(), "submitted": submit})));
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
+            }
+        }
+
+        SocketCommand::SurfaceReadSelection { req_id, id, resp_tx } => {
+            // SOCK-05: No focus side effects.
+            let surface = resolve_surface(&state.borrow(), id.as_deref());
+            match surface {
+                Ok(surf) => {
+                    let mut text = unsafe { std::mem::zeroed::<crate::ghostty::ffi::ghostty_text_s>() };
+                    let has = unsafe { crate::ghostty::ffi::ghostty_surface_read_selection(surf, &mut text) };
+                    let text = if has { take_ghostty_text(surf, &mut text) } else { String::new() };
+                    let _ = resp_tx.send(ok(req_id, json!({"text": text, "has_selection": has})));
+                }
+                Err(e) => { let _ = resp_tx.send(err(req_id, "not_found", &e)); }
+            }
+        }
+
+        SocketCommand::SurfaceCurrent { req_id, resp_tx } => {
+            // SOCK-05: No focus side effects. Pane and surface share one UUID in this
+            // port (one terminal per pane); both keys are returned for parity.
+            let s = state.borrow();
+            match (s.active_workspace(), resolve_pane(&s, None)) {
+                (Some(ws), Ok((ws_idx, pid))) => {
+                    let engine = &s.split_engines[ws_idx];
+                    let uuid = engine.root.find_uuid_for_pane(pid).unwrap_or_default();
+                    let _ = resp_tx.send(ok(req_id, json!({
+                        "workspace_id": ws.uuid.to_string(),
+                        "workspace_name": ws.name,
+                        "workspace_index": s.active_index,
+                        "pane_id": uuid,
+                        "surface_id": uuid,
+                        "alive": engine.find_surface(pid).is_some(),
+                    })));
+                }
+                _ => { let _ = resp_tx.send(err(req_id, "no_workspace", "no active workspace")); }
+            }
         }
 
         // -- Tier-2 stubs (D-10) --
