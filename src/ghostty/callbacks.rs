@@ -126,6 +126,24 @@ pub unsafe extern "C" fn action_cb(
         return true;
     }
 
+    // OSC 9 / OSC 777 desktop notifications (e.g. Claude Code's "ghostty"
+    // notification channel). Forward them as desktop notifications.
+    if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_DESKTOP_NOTIFICATION {
+        let n = unsafe { action.action.desktop_notification };
+        let to_string = |p: *const std::os::raw::c_char| {
+            if p.is_null() {
+                String::new()
+            } else {
+                unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+            }
+        };
+        let title = to_string(n.title);
+        let body = to_string(n.body);
+        let title = if title.is_empty() { "cmux".to_string() } else { title };
+        crate::app_state::send_desktop_notification(&title, &body);
+        return true;
+    }
+
     if action.tag == ffi::ghostty_action_tag_e_GHOSTTY_ACTION_RENDER {
         // Trigger a render on the GLArea — will call ghostty_surface_draw on main thread.
         if let Ok(areas) = crate::ghostty::callbacks::GL_AREA_REGISTRY.lock() {

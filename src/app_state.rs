@@ -551,7 +551,12 @@ impl AppState {
 }
 
 /// Send a desktop notification for a bell in the given workspace.
-/// Uses `notify-send` subprocess to send notifications via org.freedesktop.Notifications.
+fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _workspace_index: usize) {
+    send_desktop_notification("Terminal Bell", &format!("{} - Terminal bell", workspace_name));
+}
+
+/// Send a desktop notification via the `notify-send` subprocess
+/// (org.freedesktop.Notifications, or whatever `notify-send` is on PATH).
 ///
 /// We use a subprocess instead of notify-rust (zbus D-Bus client) because GNOME Shell
 /// destroys notifications when the D-Bus sender name vanishes. With notify-rust in a
@@ -559,14 +564,16 @@ impl AppState {
 /// FdoNotificationDaemonSource._onNameVanished() to destroy the notification immediately.
 /// `notify-send` avoids this because it's a separate process whose D-Bus lifetime is
 /// independent of cmux.
-fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _workspace_index: usize) {
-    let body = format!("{} - Terminal bell", workspace_name);
+pub(crate) fn send_desktop_notification(summary: &str, body: &str) {
+    let summary = summary.to_string();
+    let body = body.to_string();
     std::thread::spawn(move || {
         let result = std::process::Command::new("notify-send")
             .arg("--app-name=cmux")
             .arg("--icon=utilities-terminal")
             .arg("--expire-time=5000")
-            .arg("Terminal Bell")
+            .arg("--")
+            .arg(&summary)
             .arg(&body)
             .status();
         match result {
