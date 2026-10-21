@@ -821,6 +821,9 @@ pub fn create_surface(
                 Some(s) => s,
                 None => return,
             };
+            if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                eprintln!("cmux-input: mouse press button={} surface={:p}", gesture.current_button(), surface);
+            }
             let button = match gesture.current_button() {
                 1 => ffi::ghostty_input_mouse_button_e_GHOSTTY_MOUSE_LEFT,
                 2 => ffi::ghostty_input_mouse_button_e_GHOSTTY_MOUSE_MIDDLE,
@@ -851,6 +854,9 @@ pub fn create_surface(
                 3 => ffi::ghostty_input_mouse_button_e_GHOSTTY_MOUSE_RIGHT,
                 _ => return,
             };
+            if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+                eprintln!("cmux-input: mouse release button={} surface={:p}", gesture.current_button(), surface);
+            }
             let mods = crate::ghostty::input::map_mods(gesture.current_event_state());
             unsafe {
                 ffi::ghostty_surface_mouse_button(
@@ -862,6 +868,10 @@ pub fn create_surface(
             }
         }
     });
+    if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+        click_gesture.connect_stopped(|_| eprintln!("cmux-input: click gesture stopped"));
+        click_gesture.connect_cancel(|_, _| eprintln!("cmux-input: click gesture cancelled"));
+    }
     gl_area.add_controller(click_gesture);
 
     // ── Mouse motion ─────────────────────────────────────────────────────────────

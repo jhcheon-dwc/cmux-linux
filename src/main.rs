@@ -506,6 +506,35 @@ fn build_ui(
     crate::socket::start_socket_server(&runtime_handle, state.clone(), cmd_tx);
 
     // 5. Handle delete-event for close confirmation
+    // Input diagnostics (CMUX_DEBUG_INPUT=1): log every keyboard-focus change and
+    // every key press with the widget that has focus, to stderr.
+    if std::env::var_os("CMUX_DEBUG_INPUT").is_some() {
+        fn describe(w: &gtk4::Widget) -> String {
+            format!("{}{:?}@{:p}", w.type_().name(), w.css_classes(), w.as_ptr())
+        }
+        window.connect_notify_local(Some("focus-widget"), |win, _| {
+            let f = gtk4::prelude::GtkWindowExt::focus(win);
+            eprintln!("cmux-input: focus -> {}", f.as_ref().map(describe).unwrap_or_else(|| "none".into()));
+        });
+        window.connect_notify_local(Some("is-active"), |win, _| {
+            eprintln!("cmux-input: window active={}", win.is_active());
+        });
+        let keys = gtk4::EventControllerKey::new();
+        keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let win = window.clone();
+        keys.connect_key_pressed(move |_, keyval, _, mods| {
+            let f = gtk4::prelude::GtkWindowExt::focus(&win);
+            eprintln!(
+                "cmux-input: key {:?} mods={:?} focus={}",
+                keyval.name(),
+                mods,
+                f.as_ref().map(describe).unwrap_or_else(|| "none".into())
+            );
+            gtk4::glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+    }
+
     window.connect_close_request({
         let state = state.clone();
         move |_win| {
