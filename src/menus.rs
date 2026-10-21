@@ -92,9 +92,12 @@ pub fn register_actions(
     });
     window.add_action(&action);
 
-    // win.find -- stub for now (terminal find not yet implemented)
+    // win.find (Ctrl+Shift+F) -- open the terminal find bar on the focused pane
+    // (terminal-actions). Ctrl+F stays with terminal apps.
     let action = gio::SimpleAction::new("find", None);
-    action.set_enabled(false);
+    action.connect_activate(|_, _| {
+        crate::find_bar::open_for_current(true);
+    });
     window.add_action(&action);
 
     // win.preferences (D-13) -- open config.toml in $EDITOR
@@ -279,7 +282,7 @@ pub fn register_accels(app: &gtk4::Application) {
     app.set_accels_for_action("win.split-down", &["<Ctrl><Shift>d"]);
     app.set_accels_for_action("win.copy", &["<Ctrl><Shift>c"]);
     app.set_accels_for_action("win.paste", &["<Ctrl><Shift>v"]);
-    app.set_accels_for_action("win.find", &["<Ctrl>f"]);
+    app.set_accels_for_action("win.find", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("win.rename-workspace", &["<Ctrl><Shift>r"]);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
 }
@@ -418,7 +421,7 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
         .build();
     edit_group.add_shortcut(&shortcut("<Ctrl><Shift>c", "Copy"));
     edit_group.add_shortcut(&shortcut("<Ctrl><Shift>v", "Paste"));
-    edit_group.add_shortcut(&shortcut("<Ctrl>f", "Find"));
+    edit_group.add_shortcut(&shortcut("<Ctrl><Shift>f", "Find"));
     edit_section.add_group(&edit_group);
     window.add_section(&edit_section);
 

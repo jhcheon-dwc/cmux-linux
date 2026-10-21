@@ -64,4 +64,10 @@ pub enum SocketCommand {
 
     // -- Tier-2 stub (not_implemented) --
     NotImplemented   { req_id: Value, method: String, resp_tx: RespTx },
+
+    // terminal-actions: find bar + titles
+    SurfaceFind       { req_id: Value, query: Option<String>, resp_tx: RespTx },
+    SurfaceFindNext   { req_id: Value, previous: bool, resp_tx: RespTx },
+    SurfaceFindClose  { req_id: Value, resp_tx: RespTx },
+    SurfaceFindStatus { req_id: Value, resp_tx: RespTx },
 }

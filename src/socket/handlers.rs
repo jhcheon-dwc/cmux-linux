@@ -105,6 +105,8 @@ pub fn handle_socket_command(
                 "browser.state.save", "browser.state.load",
                 // Debug
                 "debug.layout", "debug.type",
+                // terminal-actions
+                "surface.find", "surface.find_next", "surface.find_close", "surface.find_status",
             ];
             let _ = resp_tx.send(ok(req_id, json!({"methods": methods})));
         }
@@ -345,11 +347,17 @@ pub fn handle_socket_command(
             let s = state.borrow();
             let mut panes: Vec<Value> = Vec::new();
             for (ws_idx, (ws, engine)) in s.workspaces.iter().zip(s.split_engines.iter()).enumerate() {
-                for (pane_uuid, _pane_id, active) in engine.all_panes() {
+                for (pane_uuid, pane_id, active) in engine.all_panes() {
+                    // terminal-actions: last OSC title of this pane, if any.
+                    let title = engine
+                        .gl_area_for_pane(pane_id)
+                        .and_then(|a| crate::header_bar::surface_for_widget(a.upcast_ref()))
+                        .and_then(crate::header_bar::title_for_surface);
                     panes.push(json!({
                         "uuid": pane_uuid.to_string(),
                         "workspace_uuid": ws.uuid.to_string(),
                         "active": active && ws_idx == s.active_index,
+                        "title": title,
                     }));
                 }
             }
@@ -830,6 +838,40 @@ pub fn handle_socket_command(
         // -- Tier-2 stubs (D-10) --
         SocketCommand::NotImplemented { req_id, method, resp_tx } => {
             let _ = resp_tx.send(err(req_id, "not_implemented", &format!("{method} is not implemented")));
+        }
+
+        // ── terminal-actions: find bar ───────────────────────────────────
+        // Main thread: drives GTK widgets and Ghostty binding actions. Results
+        // (SEARCH_TOTAL/SELECTED) arrive asynchronously; poll find_status.
+        // Not focus-intent: the bar opens without taking keyboard focus.
+        SocketCommand::SurfaceFind { req_id, query, resp_tx } => {
+            let Some(query) = query else {
+                let _ = resp_tx.send(err(req_id, "invalid_params", "query (string) is required"));
+                return;
+            };
+            if crate::find_bar::open_for_current(false) {
+                crate::find_bar::set_query(&query);
+                let _ = resp_tx.send(ok(req_id, crate::find_bar::status()));
+            } else {
+                let _ = resp_tx.send(err(req_id, "not_found", "no active terminal surface"));
+            }
+        }
+
+        SocketCommand::SurfaceFindNext { req_id, previous, resp_tx } => {
+            crate::find_bar::navigate(previous);
+            let _ = resp_tx.send(ok(req_id, crate::find_bar::status()));
+        }
+
+        SocketCommand::SurfaceFindClose { req_id, resp_tx } => {
+            // Not focus-intent: never move keyboard focus (SOCK-05).
+            crate::find_bar::close(false);
+            let _ = resp_tx.send(ok(req_id, crate::find_bar::status()));
+        }
+
+        SocketCommand::SurfaceFindStatus { req_id, resp_tx } => {
+            let mut status = crate::find_bar::status();
+            status["window_title"] = json!(crate::header_bar::current_window_title());
+            let _ = resp_tx.send(ok(req_id, status));
         }
     }
 }

@@ -18,6 +18,9 @@ mod menus;
 mod header_bar;
 mod ssh_hosts;
 mod ssh_dialog;
+// terminal-actions
+mod find_bar;
+mod url_opener;
 
 const APP_ID: &str = "io.cmux.App";
 
@@ -95,6 +98,9 @@ popover.menu { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radi
 popover.menu modelbutton { padding: 8px 16px; color: #cccccc; font-size: 14px; }
 popover.menu modelbutton:hover { background-color: #3a3a3a; }
 popover.menu accelerator { color: #5b8dd9; font-size: 12px; }
+/* terminal-actions: find bar overlay */
+.cmux-find-bar { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; padding: 4px; }
+.cmux-find-counter { color: #888888; font-size: 12px; }
 ";
 
 fn main() {
@@ -283,7 +289,13 @@ fn build_ui(
 
     let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     hbox.append(&sidebar_box);
-    hbox.append(&stack);
+    // terminal-actions: the workspace stack sits in an overlay so the find bar
+    // can float above whichever pane is focused.
+    let content_overlay = gtk4::Overlay::new();
+    content_overlay.set_child(Some(&stack));
+    content_overlay.set_hexpand(true);
+    content_overlay.set_vexpand(true);
+    hbox.append(&content_overlay);
     // Make the stack expand to fill remaining width.
     stack.set_hexpand(true);
     stack.set_vexpand(true);
@@ -546,6 +558,10 @@ fn build_ui(
     // Phase 9: Register GIO actions for menu/button dispatch
     crate::menus::register_actions(&window, state.clone(), &sidebar_box, app);
     crate::menus::register_accels(app);
+
+    // terminal-actions: find bar + window title from the focused pane.
+    crate::find_bar::install(&window, &content_overlay);
+    crate::header_bar::install_title_tracking(&window, &state);
 
     // 7. Install keyboard shortcuts (config-driven, D-06)
     crate::shortcuts::install_shortcuts(&window, state.clone(), &sidebar_box, app, shortcut_map);

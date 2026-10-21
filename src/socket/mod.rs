@@ -274,6 +274,20 @@ async fn dispatch_line(
             resp_tx,
         },
 
+        // terminal-actions
+        "surface.find" => commands::SocketCommand::SurfaceFind {
+            req_id: req_id.clone(),
+            query: params.get("query").and_then(|v| v.as_str()).map(String::from),
+            resp_tx,
+        },
+        "surface.find_next" => commands::SocketCommand::SurfaceFindNext {
+            req_id: req_id.clone(),
+            previous: params.get("previous").and_then(|v| v.as_bool()).unwrap_or(false),
+            resp_tx,
+        },
+        "surface.find_close" => commands::SocketCommand::SurfaceFindClose { req_id: req_id.clone(), resp_tx },
+        "surface.find_status" => commands::SocketCommand::SurfaceFindStatus { req_id: req_id.clone(), resp_tx },
+
         // Route all other browser.* methods to the generic proxy (P0/P1 parity)
         _ if method.starts_with("browser.") => {
             let action = method.strip_prefix("browser.").unwrap().to_string();
