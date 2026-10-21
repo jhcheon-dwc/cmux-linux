@@ -56,6 +56,15 @@ pub fn register_actions(
     });
     window.add_action(&action);
 
+    // browser-devtools: win.browser-devtools("toggle"|"console"|"network"|
+    // "elements"|"close"|"clear"|"hard-reload"|"chrome"|"eval:<js>")
+    let action = gio::SimpleAction::new("browser-devtools", Some(glib::VariantTy::STRING));
+    action.connect_activate(|_, param| {
+        let arg = param.and_then(|p| p.str()).unwrap_or("toggle").to_string();
+        crate::browser_devtools::activate_action(&arg);
+    });
+    window.add_action(&action);
+
     // win.close-pane
     let action = gio::SimpleAction::new("close-pane", None);
     action.connect_activate({

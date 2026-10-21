@@ -287,6 +287,8 @@ pub struct PreviewPaneWidgets {
     pub reload_btn: gtk4::Button,
     pub go_btn: gtk4::Button,
     pub devtools_btn: gtk4::ToggleButton,
+    // browser-devtools: page area (start) / devtools panel (end, while open).
+    pub devtools_paned: gtk4::Paned,
     pub close_btn: gtk4::Button,
     pub pane_id: u64,
     pub uuid: Uuid,
@@ -365,7 +367,20 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     // Vertical box: nav bar on top, picture overlay below
     let vbox = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     vbox.append(&nav_bar);
-    vbox.append(&overlay);
+    // browser-devtools: the page sits in its own box (overlay -> page box, so
+    // `overlay.parent()` stays a plain Box) inside a Paned whose end child is
+    // the devtools panel while it is open.
+    let page_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    page_box.append(&overlay);
+    let devtools_paned = gtk4::Paned::new(gtk4::Orientation::Vertical);
+    devtools_paned.set_start_child(Some(&page_box));
+    devtools_paned.set_resize_start_child(true);
+    devtools_paned.set_shrink_start_child(false);
+    devtools_paned.set_resize_end_child(false);
+    devtools_paned.set_shrink_end_child(false);
+    devtools_paned.set_vexpand(true);
+    vbox.append(&devtools_paned);
+    // browser-devtools end
 
     PreviewPaneWidgets {
         container: vbox,
@@ -376,6 +391,7 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
         reload_btn,
         go_btn,
         devtools_btn,
+        devtools_paned, // browser-devtools
         close_btn,
         pane_id: next_pane_id,
         uuid,

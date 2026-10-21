@@ -259,6 +259,9 @@ pub fn handle_socket_command(
                 "browser.frame.select", "browser.frame.main",
                 "browser.dialog.accept", "browser.dialog.dismiss",
                 "browser.console.list", "browser.errors.list",
+                // browser-devtools
+                "browser.console.clear", "browser.errors.clear",
+                "browser.network.list", "browser.network.clear", "browser.devtools.url",
                 "browser.highlight",
                 "browser.state.save", "browser.state.load",
                 // Debug
@@ -1061,8 +1064,24 @@ pub fn handle_socket_command(
                     "gethtml" => "innerhtml",
                     "stream.enable" => "stream_enable",
                     "stream.disable" => "stream_disable",
+                    // browser-devtools: list/clear map onto the daemon's
+                    // console/errors/requests actions (`clear: true` clears).
+                    "console.list" | "console.clear" => "console",
+                    "errors.list" | "errors.clear" => "errors",
+                    "network.list" | "network.clear" | "network" => "requests",
+                    "devtools.url" => "inspect",
                     _ => &action,
                 };
+                if let Some(obj) = params.as_object_mut() {
+                    if action.ends_with(".clear") {
+                        obj.insert("clear".to_string(), json!(true));
+                    }
+                    // Return the DevTools URL instead of opening a browser
+                    // from the daemon.
+                    if action == "devtools.url" {
+                        obj.insert("open".to_string(), json!(false));
+                    }
+                }
                 match bm.send_command(daemon_action, params) {
                     Ok(result) => {
                         let _ = resp_tx.send(ok(req_id, result));
