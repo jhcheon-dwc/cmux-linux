@@ -60,6 +60,21 @@ pub struct ShortcutConfig {
     pub resize_up: Option<String>,
     pub resize_down: Option<String>,
     pub equalize_splits: Option<String>,
+    // tabs
+    pub new_tab: Option<String>,
+    pub next_tab: Option<String>,
+    pub prev_tab: Option<String>,
+    pub next_tab_alt: Option<String>,
+    pub prev_tab_alt: Option<String>,
+    pub goto_tab_1: Option<String>,
+    pub goto_tab_2: Option<String>,
+    pub goto_tab_3: Option<String>,
+    pub goto_tab_4: Option<String>,
+    pub goto_tab_5: Option<String>,
+    pub goto_tab_6: Option<String>,
+    pub goto_tab_7: Option<String>,
+    pub goto_tab_8: Option<String>,
+    pub goto_tab_9: Option<String>,
 }
 
 /// UI configuration section -- [ui] in config.toml (D-16).
@@ -67,6 +82,9 @@ pub struct ShortcutConfig {
 pub struct UiConfig {
     #[serde(default)]
     pub header_bar: HeaderBarConfig,
+    /// tabs: show the tab bar on panes with a single tab too.
+    #[serde(default)]
+    pub always_show_tabs: bool,
 }
 
 /// Header bar configuration -- [ui.header_bar] in config.toml (D-16).
@@ -140,6 +158,23 @@ pub enum ShortcutAction {
     ResizeUp,
     ResizeDown,
     EqualizeSplits,
+    // tabs
+    NewTab,
+    NextTab,
+    PrevTab,
+    /// Second binding for NextTab (Ctrl+PageDown).
+    NextTabAlt,
+    /// Second binding for PrevTab (Ctrl+PageUp).
+    PrevTabAlt,
+    GotoTab1,
+    GotoTab2,
+    GotoTab3,
+    GotoTab4,
+    GotoTab5,
+    GotoTab6,
+    GotoTab7,
+    GotoTab8,
+    GotoTab9,
 }
 
 /// HashMap-based shortcut lookup table built from config + defaults.
@@ -164,6 +199,10 @@ const KNOWN_SHORTCUTS: &[&str] = &[
     "focus_pane_6", "focus_pane_7", "focus_pane_8", "focus_pane_9",
     "focus_last_pane", "resize_left", "resize_right", "resize_up", "resize_down",
     "equalize_splits",
+    // tabs
+    "new_tab", "next_tab", "prev_tab", "next_tab_alt", "prev_tab_alt",
+    "goto_tab_1", "goto_tab_2", "goto_tab_3", "goto_tab_4", "goto_tab_5",
+    "goto_tab_6", "goto_tab_7", "goto_tab_8", "goto_tab_9",
 ];
 
 /// Modifier mask for lookup: ignore Caps Lock, Num Lock, etc.
@@ -280,6 +319,21 @@ impl ShortcutMap {
             (ShortcutAction::ResizeUp,        &config.resize_up,        "<Ctrl><Alt><Shift>Up"),
             (ShortcutAction::ResizeDown,      &config.resize_down,      "<Ctrl><Alt><Shift>Down"),
             (ShortcutAction::EqualizeSplits,  &config.equalize_splits,  "<Ctrl><Alt>equal"),
+            // tabs
+            (ShortcutAction::NewTab,          &config.new_tab,          "<Ctrl><Shift>t"),
+            (ShortcutAction::NextTab,         &config.next_tab,         "<Ctrl>Tab"),
+            (ShortcutAction::PrevTab,         &config.prev_tab,         "<Ctrl><Shift>Tab"),
+            (ShortcutAction::NextTabAlt,      &config.next_tab_alt,     "<Ctrl>Page_Down"),
+            (ShortcutAction::PrevTabAlt,      &config.prev_tab_alt,     "<Ctrl>Page_Up"),
+            (ShortcutAction::GotoTab1,        &config.goto_tab_1,       "<Alt>1"),
+            (ShortcutAction::GotoTab2,        &config.goto_tab_2,       "<Alt>2"),
+            (ShortcutAction::GotoTab3,        &config.goto_tab_3,       "<Alt>3"),
+            (ShortcutAction::GotoTab4,        &config.goto_tab_4,       "<Alt>4"),
+            (ShortcutAction::GotoTab5,        &config.goto_tab_5,       "<Alt>5"),
+            (ShortcutAction::GotoTab6,        &config.goto_tab_6,       "<Alt>6"),
+            (ShortcutAction::GotoTab7,        &config.goto_tab_7,       "<Alt>7"),
+            (ShortcutAction::GotoTab8,        &config.goto_tab_8,       "<Alt>8"),
+            (ShortcutAction::GotoTab9,        &config.goto_tab_9,       "<Alt>9"),
         ];
 
         let mut map = HashMap::new();
@@ -323,6 +377,8 @@ impl ShortcutMap {
     /// with the Shift modifier flag (e.g. Key::r + SHIFT_MASK).
     pub fn lookup(&self, mods: ModifierType, key: Key) -> Option<ShortcutAction> {
         let masked = mods & MOD_MASK;
+        // tabs: Shift+Tab arrives as ISO_Left_Tab; accelerators say Tab.
+        let key = if key == Key::ISO_Left_Tab { Key::Tab } else { key };
         let lower_key = key.to_lower();
         self.map.get(&(masked, lower_key)).copied()
     }
@@ -598,6 +654,48 @@ focus_pane_typo = "<Ctrl><Alt>F2"
         assert_eq!(cfg.shortcuts.focus_pane_9.as_deref(), Some("<Ctrl><Alt>F9"));
         assert_eq!(cfg.shortcuts.resize_down.as_deref(), Some("<Ctrl><Alt><Shift>j"));
         assert_eq!(cfg.shortcuts.equalize_splits.as_deref(), Some("<Ctrl><Alt>0"));
+    }
+
+    // tabs
+    #[test]
+    fn test_shortcut_map_tab_defaults() {
+        on_gtk_thread("test_shortcut_map_tab_defaults", || {
+            let smap = ShortcutMap::from_config(&ShortcutConfig::default());
+            let c = ModifierType::CONTROL_MASK;
+            let cs = c | ModifierType::SHIFT_MASK;
+            assert_eq!(smap.lookup(cs, Key::T), Some(ShortcutAction::NewTab));
+            assert_eq!(smap.lookup(c, Key::Tab), Some(ShortcutAction::NextTab));
+            // Shift+Tab arrives as ISO_Left_Tab.
+            assert_eq!(smap.lookup(cs, Key::ISO_Left_Tab), Some(ShortcutAction::PrevTab));
+            assert_eq!(smap.lookup(c, Key::Page_Down), Some(ShortcutAction::NextTabAlt));
+            assert_eq!(smap.lookup(c, Key::Page_Up), Some(ShortcutAction::PrevTabAlt));
+            let alt = ModifierType::ALT_MASK;
+            assert_eq!(smap.lookup(alt, Key::_1), Some(ShortcutAction::GotoTab1));
+            assert_eq!(smap.lookup(alt, Key::_9), Some(ShortcutAction::GotoTab9));
+            // Existing defaults are untouched; close tab is close pane.
+            assert_eq!(smap.lookup(cs, Key::X), Some(ShortcutAction::ClosePane));
+            assert_eq!(smap.lookup(c, Key::_1), Some(ShortcutAction::Workspace1));
+            assert_eq!(smap.lookup(c | alt, Key::_1), Some(ShortcutAction::FocusPane1));
+        });
+    }
+
+    #[test]
+    fn test_tab_config_keys() {
+        let content = r#"
+[ui]
+always_show_tabs = true
+[shortcuts]
+new_tab = "<Ctrl><Alt>t"
+next_tab_alt = "<Alt>Right"
+goto_tab_9 = "<Alt>0"
+"#;
+        assert!(unknown_shortcut_keys(content).is_empty());
+        let cfg: Config = toml::from_str(content).unwrap();
+        assert!(cfg.ui.always_show_tabs);
+        assert_eq!(cfg.shortcuts.new_tab.as_deref(), Some("<Ctrl><Alt>t"));
+        assert_eq!(cfg.shortcuts.goto_tab_9.as_deref(), Some("<Alt>0"));
+        let cfg: Config = toml::from_str("").unwrap();
+        assert!(!cfg.ui.always_show_tabs);
     }
 
     // notifications

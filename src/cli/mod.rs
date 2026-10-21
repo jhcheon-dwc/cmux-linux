@@ -280,6 +280,33 @@ pub enum Commands {
     /// Show the focused workspace, pane and surface
     Current,
 
+    // tabs
+    /// Open a new terminal tab in a pane (default: the focused pane)
+    NewTab {
+        /// A surface in the target pane (default: focused)
+        #[arg(long)]
+        surface: Option<String>,
+    },
+    /// Close a terminal tab (closes the pane on its last tab)
+    CloseTab {
+        /// Tab surface ID (default: the focused tab)
+        id: Option<String>,
+    },
+    /// Select a tab by its 1-based number in the focused pane, or by surface ID
+    SelectTab {
+        /// Tab number (1 = leftmost) or surface UUID
+        target: String,
+    },
+    /// Switch to the next tab of the focused pane
+    NextTab,
+    /// Switch to the previous tab of the focused pane
+    PrevTab,
+    /// List the tabs of a pane (default: the focused pane)
+    ListTabs {
+        /// A surface in the pane to list
+        #[arg(long)]
+        pane: Option<String>,
+    },
 }
 
 /// Browser subcommands for `cmux browser <action>` / `cmux browser <surface> <action>`.
@@ -774,6 +801,34 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
                 p.insert("workspace".into(), json!(w));
             }
             ("notification.create", Value::Object(p))
+        }
+        // tabs
+        Commands::NewTab { surface } => {
+            let mut p = serde_json::Map::new();
+            if let Some(ref s) = surface {
+                p.insert("surface_id".into(), json!(s));
+            }
+            ("tab.new", Value::Object(p))
+        }
+        Commands::CloseTab { id } => {
+            let mut p = serde_json::Map::new();
+            if let Some(ref id) = id {
+                p.insert("surface_id".into(), json!(id));
+            }
+            ("tab.close", Value::Object(p))
+        }
+        Commands::SelectTab { target } => match target.parse::<u64>() {
+            Ok(n) if n >= 1 => ("tab.select", json!({"index": n - 1})),
+            _ => ("tab.select", json!({"surface_id": target})),
+        },
+        Commands::NextTab => ("tab.next", json!({})),
+        Commands::PrevTab => ("tab.prev", json!({})),
+        Commands::ListTabs { pane } => {
+            let mut p = serde_json::Map::new();
+            if let Some(ref pane) = pane {
+                p.insert("pane".into(), json!(pane));
+            }
+            ("tab.list", Value::Object(p))
         }
         // socket-cli
         Commands::Paste { text, id, submit } => {

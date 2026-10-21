@@ -326,6 +326,9 @@ pub fn format_response(method: &str, result: &Value, json_mode: bool, color: boo
         // Browser list: human-readable table
         "browser.list" => format_browser_list(result, color),
 
+        // tabs: tab.list and the tab mutations all return the pane's tab list
+        "tab.list" | "tab.new" | "tab.select" | "tab.next" | "tab.prev" => format_tab_list(result, color),
+
         // agent-status
         "workspace.set_status" => {
             let id = result.get("workspace_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -364,6 +367,33 @@ fn format_current(result: &Value) -> String {
         get("pane_id"),
         get("surface_id"),
     )
+}
+
+/// tabs: format a pane's tab list ("* 2: title  uuid8"), focused tab marked.
+pub fn format_tab_list(result: &Value, color: bool) -> String {
+    let tabs = match result.get("tabs").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return format_fallback(result),
+    };
+    let mut lines = Vec::new();
+    for tab in tabs {
+        let active = tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+        let index = tab.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+        let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let id = tab.get("surface_id").and_then(|v| v.as_str()).unwrap_or("");
+        let id_short = &id[..id.len().min(8)];
+        let line = format!("{} {}: {}  {}", if active { "*" } else { " " }, index + 1, title, id_short);
+        if active && color {
+            lines.push(green(&line, true));
+        } else {
+            lines.push(line);
+        }
+    }
+    if lines.is_empty() {
+        "No tabs".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 /// Format a browser surface list response.

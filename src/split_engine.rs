@@ -27,6 +27,9 @@ pub enum SplitNode {
         uuid: Uuid,
         /// Phase 4 NOTF-01: true when this pane has unread bell activity.
         has_attention: bool,
+        /// tabs: the pane's other terminal tabs. The fields above are always
+        /// the ACTIVE tab (see tabs.rs).
+        tabs: crate::tabs::PaneTabs,
     },
     /// Phase 8: Browser preview pane (agent-browser frame rendering).
     Preview {
@@ -49,7 +52,10 @@ impl SplitNode {
     /// Returns the root GTK widget for this node (GLArea for Leaf, Overlay for Preview, Paned for Split).
     pub fn widget(&self) -> gtk4::Widget {
         match self {
-            SplitNode::Leaf { gl_area, .. } => gl_area.clone().upcast(),
+            SplitNode::Leaf { gl_area, tabs, .. } => match &tabs.ui {
+                Some(ui) => ui.container.clone().upcast(),
+                None => gl_area.clone().upcast(),
+            },
             SplitNode::Preview { container, .. } => container.clone().upcast(),
             SplitNode::Split { paned, .. } => paned.clone().upcast(),
         }
@@ -83,6 +89,10 @@ impl SplitNode {
     /// Find the UUID for a pane by pane_id. Returns None if not found.
     pub fn find_uuid_for_pane(&self, target_id: u64) -> Option<String> {
         match self {
+            // tabs: background tabs keep their own pane_id/uuid.
+            SplitNode::Leaf { tabs, .. } if tabs.others.iter().any(|t| t.pane_id == target_id) => {
+                tabs.others.iter().find(|t| t.pane_id == target_id).map(|t| t.uuid.to_string())
+            }
             SplitNode::Leaf { pane_id, uuid, .. } | SplitNode::Preview { pane_id, uuid, .. } => {
                 if *pane_id == target_id {
                     Some(uuid.to_string())
@@ -151,7 +161,10 @@ impl SplitNode {
     /// Collect every terminal GLArea in this subtree (Preview panes have none).
     pub fn collect_gl_areas(&self, out: &mut Vec<gtk4::GLArea>) {
         match self {
-            SplitNode::Leaf { gl_area, .. } => out.push(gl_area.clone()),
+            SplitNode::Leaf { gl_area, tabs, .. } => {
+                out.push(gl_area.clone());
+                out.extend(tabs.others.iter().map(|t| t.gl_area.clone()));
+            }
             SplitNode::Preview { .. } => {}
             SplitNode::Split { start, end, .. } => {
                 start.collect_gl_areas(out);
@@ -162,7 +175,10 @@ impl SplitNode {
 
     pub fn collect_surfaces(&self, out: &mut Vec<ffi::ghostty_surface_t>) {
         match self {
-            SplitNode::Leaf { surface, .. } => out.push(*surface),
+            SplitNode::Leaf { surface, tabs, .. } => {
+                out.push(*surface);
+                out.extend(tabs.others.iter().map(|t| t.surface));
+            }
             SplitNode::Preview { .. } => {} // No Ghostty surface
             SplitNode::Split { start, end, .. } => {
                 start.collect_surfaces(out);
@@ -175,8 +191,12 @@ impl SplitNode {
     /// Used by debug.type to send text to a specific pane's surface.
     pub fn find_surface_for_pane(&self, target_id: u64) -> Option<ffi::ghostty_surface_t> {
         match self {
-            SplitNode::Leaf { pane_id, surface, .. } => {
-                if *pane_id == target_id { Some(*surface) } else { None }
+            SplitNode::Leaf { pane_id, surface, tabs, .. } => {
+                if *pane_id == target_id {
+                    Some(*surface)
+                } else {
+                    tabs.others.iter().find(|t| t.pane_id == target_id).map(|t| t.surface)
+                }
             }
             SplitNode::Preview { .. } => None, // No Ghostty surface
             SplitNode::Split { start, end, .. } => {
@@ -202,8 +222,16 @@ impl SplitNode {
     /// Find the ghostty surface handle for the leaf matching target_uuid (UUID string).
     pub fn find_by_uuid(&self, target_uuid: &str) -> Option<ffi::ghostty_surface_t> {
         match self {
-            SplitNode::Leaf { uuid, surface, .. } => {
-                if uuid.to_string() == target_uuid { Some(*surface) } else { None }
+            SplitNode::Leaf { uuid, surface, gl_area, tabs, .. } => {
+                // tabs: resolve through the GLArea, the leaf pointer may be null.
+                if uuid.to_string() == target_uuid {
+                    crate::tabs::live_surface(gl_area, *surface)
+                } else {
+                    tabs.others
+                        .iter()
+                        .find(|t| t.uuid.to_string() == target_uuid)
+                        .and_then(|t| crate::tabs::live_surface(&t.gl_area, t.surface))
+                }
             }
             SplitNode::Preview { .. } => None, // No Ghostty surface to return
             SplitNode::Split { start, end, .. } => {
@@ -215,6 +243,11 @@ impl SplitNode {
     /// Find the pane_id for the leaf matching target_uuid (UUID string).
     pub fn find_pane_id_by_uuid(&self, target_uuid: &str) -> Option<u64> {
         match self {
+            SplitNode::Leaf { tabs, .. }
+                if tabs.others.iter().any(|t| t.uuid.to_string() == target_uuid) =>
+            {
+                tabs.others.iter().find(|t| t.uuid.to_string() == target_uuid).map(|t| t.pane_id)
+            }
             SplitNode::Leaf { uuid, pane_id, .. } | SplitNode::Preview { uuid, pane_id, .. } => {
                 if uuid.to_string() == target_uuid { Some(*pane_id) } else { None }
             }
@@ -228,13 +261,20 @@ impl SplitNode {
     /// Set has_attention on the leaf matching pane_id. Returns true if found.
     pub fn set_attention(&mut self, target_pane_id: u64, value: bool) -> bool {
         match self {
-            SplitNode::Leaf { pane_id, has_attention, .. } => {
-                if *pane_id == target_pane_id {
+            SplitNode::Leaf { pane_id, has_attention, tabs, .. } => {
+                let found = if *pane_id == target_pane_id {
                     *has_attention = value;
+                    true
+                } else if let Some(t) = tabs.others.iter_mut().find(|t| t.pane_id == target_pane_id) {
+                    t.has_attention = value;
                     true
                 } else {
                     false
+                };
+                if found {
+                    self.refresh_tab_bar();
                 }
+                found
             }
             SplitNode::Preview { .. } => false, // No attention state
             SplitNode::Split { start, end, .. } => {
@@ -246,7 +286,9 @@ impl SplitNode {
     /// Returns true if any leaf in this subtree has attention.
     pub fn any_attention(&self) -> bool {
         match self {
-            SplitNode::Leaf { has_attention, .. } => *has_attention,
+            SplitNode::Leaf { has_attention, tabs, .. } => {
+                *has_attention || tabs.others.iter().any(|t| t.has_attention)
+            }
             SplitNode::Preview { .. } => false,
             SplitNode::Split { start, end, .. } => start.any_attention() || end.any_attention(),
         }
@@ -255,8 +297,9 @@ impl SplitNode {
     /// Check if a specific pane has attention.
     pub fn pane_has_attention(&self, target_pane_id: u64) -> bool {
         match self {
-            SplitNode::Leaf { pane_id, has_attention, .. } => {
-                *pane_id == target_pane_id && *has_attention
+            SplitNode::Leaf { pane_id, has_attention, tabs, .. } => {
+                (*pane_id == target_pane_id && *has_attention)
+                    || tabs.others.iter().any(|t| t.pane_id == target_pane_id && t.has_attention)
             }
             SplitNode::Preview { .. } => false,
             SplitNode::Split { start, end, .. } => {
@@ -268,7 +311,14 @@ impl SplitNode {
     /// Clear attention on all leaves in this subtree.
     pub fn clear_all_attention(&mut self) {
         match self {
-            SplitNode::Leaf { has_attention, .. } => *has_attention = false,
+            SplitNode::Leaf { has_attention, tabs, .. } => {
+                let had = *has_attention || tabs.others.iter().any(|t| t.has_attention);
+                *has_attention = false;
+                tabs.others.iter_mut().for_each(|t| t.has_attention = false);
+                if had {
+                    self.refresh_tab_bar();
+                }
+            }
             SplitNode::Preview { .. } => {} // No attention state
             SplitNode::Split { start, end, .. } => {
                 start.clear_all_attention();
@@ -334,13 +384,8 @@ impl SplitEngine {
         let surface_placeholder: ffi::ghostty_surface_t = std::ptr::null_mut();
         // Phase 9: Attach right-click context menu (D-08)
         attach_terminal_context_menu(&initial_gl_area);
-        let root = SplitNode::Leaf {
-            pane_id,
-            gl_area: initial_gl_area,
-            surface: surface_placeholder,
-            uuid: ids.surface,
-            has_attention: false,
-        };
+        let _ = surface_placeholder;
+        let root = new_leaf(pane_id, initial_gl_area, ids.surface);
         SplitEngine {
             root,
             active_pane_id: pane_id,
@@ -361,9 +406,11 @@ impl SplitEngine {
 
     fn set_surface_recursive(node: &mut SplitNode, target_pane_id: u64, surface: ffi::ghostty_surface_t) {
         match node {
-            SplitNode::Leaf { pane_id, surface: s, .. } => {
+            SplitNode::Leaf { pane_id, surface: s, tabs, .. } => {
                 if *pane_id == target_pane_id {
                     *s = surface;
+                } else if let Some(t) = tabs.others.iter_mut().find(|t| t.pane_id == target_pane_id) {
+                    t.surface = surface;
                 }
             }
             SplitNode::Preview { .. } => {} // No surface to set
@@ -419,28 +466,59 @@ impl SplitEngine {
             return None;
         }
         match data {
-            SplitNodeData::Leaf { surface_uuid, .. } => {
-                let pane_id = *next_pane_id;
-                *next_pane_id += 1;
-                // D-06: preserve UUID from session. Preview panes are saved as
-                // nil-UUID leaves; give those a fresh one so restored panes never
-                // share an identity (or a CMUX_SURFACE_ID).
-                let uuid = if surface_uuid.is_nil() { Uuid::new_v4() } else { *surface_uuid };
-                let ids = crate::ghostty::surface::PaneIds { workspace: workspace_uuid, surface: uuid };
-                // Create surface — realize callback will create Ghostty surface and wire registries
-                let config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW);
-                let (gl_area, _surface_cell) =
-                    crate::ghostty::surface::create_surface(app, ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, ids);
-                // Phase 9: Attach right-click context menu (D-08)
-                attach_terminal_context_menu(&gl_area);
-                let surface_placeholder: ffi::ghostty_surface_t = std::ptr::null_mut();
-                Some(SplitNode::Leaf {
-                    pane_id,
-                    gl_area,
-                    surface: surface_placeholder,
-                    uuid,
-                    has_attention: false,
-                })
+            SplitNodeData::Leaf { surface_uuid, cwd, tabs: saved_tabs, active_tab, .. } => {
+                // tabs: every saved tab of the pane (sessions from before tabs
+                // existed have none: the leaf itself is the only tab).
+                let saved: Vec<crate::tabs::TabData> = if saved_tabs.is_empty() {
+                    vec![crate::tabs::TabData { surface_uuid: *surface_uuid, cwd: cwd.clone() }]
+                } else {
+                    saved_tabs.clone()
+                };
+                let active = (*active_tab).min(saved.len() - 1);
+                let mut entries: Vec<crate::tabs::TabEntry> = Vec::with_capacity(saved.len());
+                for tab in &saved {
+                    let pane_id = *next_pane_id;
+                    *next_pane_id += 1;
+                    // D-06: preserve UUID from session. Preview panes are saved as
+                    // nil-UUID leaves; give those a fresh one so restored panes never
+                    // share an identity (or a CMUX_SURFACE_ID).
+                    let uuid = if tab.surface_uuid.is_nil() { Uuid::new_v4() } else { tab.surface_uuid };
+                    // Create surface — realize callback will create Ghostty surface and wire registries
+                    let ids = crate::ghostty::surface::PaneIds { workspace: workspace_uuid, surface: uuid };
+                    let mut config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW);
+                    // tabs: a pane saved with a tab list starts each tab in its saved
+                    // working directory, if it still exists (single-tab panes keep
+                    // the old behavior).
+                    if !saved_tabs.is_empty() && !tab.cwd.is_empty() && std::path::Path::new(&tab.cwd).is_dir() {
+                        config.working_directory = leak_c_string(&tab.cwd);
+                    }
+                    let (gl_area, _surface_cell) =
+                        crate::ghostty::surface::create_surface(app, ghostty_app, Some(config), pane_id, crate::ghostty::surface::SurfaceIoMode::Exec, ids);
+                    // Phase 9: Attach right-click context menu (D-08)
+                    attach_terminal_context_menu(&gl_area);
+                    entries.push(crate::tabs::TabEntry {
+                        pane_id,
+                        gl_area,
+                        surface: std::ptr::null_mut(),
+                        uuid,
+                        has_attention: false,
+                    });
+                }
+                let current = entries.remove(active);
+                let mut leaf = new_leaf(current.pane_id, current.gl_area, current.uuid);
+                if let SplitNode::Leaf { tabs, gl_area, .. } = &mut leaf {
+                    if !entries.is_empty() {
+                        let ui = ensure_tabs_ui(gl_area, tabs);
+                        for t in &entries {
+                            ui.stack.add_child(&t.gl_area);
+                        }
+                        ui.stack.set_visible_child(gl_area);
+                    }
+                    tabs.others = entries;
+                    tabs.active = active;
+                }
+                leaf.refresh_tab_bar();
+                Some(leaf)
             }
             SplitNodeData::Split { orientation, ratio, start, end } => {
                 let start_node = Self::node_from_data(app, ghostty_app, start, next_pane_id, depth + 1, workspace_uuid)?;
@@ -489,13 +567,12 @@ impl SplitEngine {
 
     fn sync_surfaces_recursive(node: &mut SplitNode) {
         match node {
-            SplitNode::Leaf { gl_area, surface, .. } => {
+            SplitNode::Leaf { gl_area, surface, tabs, .. } => {
                 if surface.is_null() {
-                    if let Ok(gl_to_surface) = crate::ghostty::callbacks::GL_TO_SURFACE.lock() {
-                        if let Some(&s) = gl_to_surface.get(&(gl_area.as_ptr() as usize)) {
-                            *surface = s as ffi::ghostty_surface_t;
-                        }
-                    }
+                    *surface = crate::tabs::live_surface(gl_area, *surface).unwrap_or(std::ptr::null_mut());
+                }
+                for t in tabs.others.iter_mut().filter(|t| t.surface.is_null()) {
+                    t.surface = crate::tabs::live_surface(&t.gl_area, t.surface).unwrap_or(std::ptr::null_mut());
                 }
             }
             SplitNode::Preview { .. } => {} // No surface to sync
@@ -640,13 +717,8 @@ impl SplitEngine {
 
         // Replace the active leaf in the tree with a Split node.
         let new_surface_placeholder: ffi::ghostty_surface_t = std::ptr::null_mut();
-        let new_leaf = SplitNode::Leaf {
-            pane_id: new_pane_id,
-            gl_area: new_gl_area.clone(),
-            surface: new_surface_placeholder, // updated after realize via SURFACE_REGISTRY
-            uuid: new_uuid,
-            has_attention: false,
-        };
+        let _ = new_surface_placeholder; // updated after realize via SURFACE_REGISTRY
+        let new_leaf = new_leaf(new_pane_id, new_gl_area.clone(), new_uuid);
 
         let _replaced = self.replace_leaf_with_split(active_id, new_leaf, orientation)?;
 
@@ -922,6 +994,11 @@ impl SplitEngine {
     pub fn close_active(&mut self) -> Option<u64> {
         let active_id = self.active_pane_id;
 
+        // tabs: a pane with several tabs loses only its active tab.
+        if self.tab_location(active_id).is_some_and(|(_, _, count)| count > 1) {
+            return self.close_tab(active_id).then_some(self.active_pane_id);
+        }
+
         // Cannot close the last pane — workspace close is handled at AppState level.
         let is_single_pane = match &self.root {
             SplitNode::Leaf { pane_id, .. } if *pane_id == active_id => true,
@@ -1067,6 +1144,13 @@ impl SplitEngine {
     /// active pane only re-grabs GTK focus: toggling Ghostty focus off and on
     /// again would kill the cursor blink timer (see restore_active_pane_focus).
     pub fn focus_pane(&mut self, pane_id: u64) -> bool {
+        // tabs: a terminal in a background tab: bring its tab to the front.
+        let pane_id = match self.tab_location(pane_id) {
+            Some((leaf_id, index, _)) if leaf_id != pane_id => {
+                self.select_tab_in(leaf_id, index).unwrap_or(pane_id)
+            }
+            _ => pane_id,
+        };
         if self.root.find_node(pane_id).is_none() {
             return false;
         }
@@ -1200,6 +1284,7 @@ where
                         surface: std::ptr::null_mut(),
                         uuid: Uuid::new_v4(),
                         has_attention: false,
+                        tabs: Default::default(),
                     },
                 );
                 *node = r(old);
@@ -1348,7 +1433,11 @@ fn find_surface_in_tree(node: &SplitNode, pane_id: u64) -> Option<ffi::ghostty_s
                 Some(*surface)
             }
         }
-        SplitNode::Leaf { .. } => None,
+        SplitNode::Leaf { tabs, .. } => tabs
+            .others
+            .iter()
+            .find(|t| t.pane_id == pane_id && !t.surface.is_null())
+            .map(|t| t.surface),
         SplitNode::Preview { .. } => None, // No Ghostty surface
         SplitNode::Split { start, end, .. } => {
             find_surface_in_tree(start, pane_id).or_else(|| find_surface_in_tree(end, pane_id))
@@ -1363,7 +1452,11 @@ fn find_gl_area_in_tree(node: &SplitNode, pane_id: u64) -> Option<gtk4::GLArea> 
             gl_area,
             ..
         } if *id == pane_id => Some(gl_area.clone()),
-        SplitNode::Leaf { .. } => None,
+        SplitNode::Leaf { tabs, .. } => tabs
+            .others
+            .iter()
+            .find(|t| t.pane_id == pane_id)
+            .map(|t| t.gl_area.clone()),
         SplitNode::Preview { .. } => None, // Preview uses Picture, not GLArea
         SplitNode::Split { start, end, .. } => {
             find_gl_area_in_tree(start, pane_id).or_else(|| find_gl_area_in_tree(end, pane_id))
@@ -1407,7 +1500,11 @@ fn update_surface_in_tree(node: &mut SplitNode, pane_id: u64, surface: ffi::ghos
             surface: s,
             ..
         } if *id == pane_id => *s = surface,
-        SplitNode::Leaf { .. } => {}
+        SplitNode::Leaf { tabs, .. } => {
+            if let Some(t) = tabs.others.iter_mut().find(|t| t.pane_id == pane_id) {
+                t.surface = surface;
+            }
+        }
         SplitNode::Preview { .. } => {} // No surface to update
         SplitNode::Split { start, end, .. } => {
             update_surface_in_tree(start, pane_id, surface);
@@ -1588,6 +1685,14 @@ pub enum SplitNodeData {
         shell: String,
         /// Absolute working directory path (best-effort; may be empty if /proc unavailable)
         cwd: String,
+        /// tabs: every tab of the pane in tab order, for panes with 2+ tabs.
+        /// `surface_uuid`/`cwd` above are the active tab's, so older cmux
+        /// versions still restore that one. Absent in older session files.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tabs: Vec<crate::tabs::TabData>,
+        /// tabs: index of the active tab in `tabs`.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        active_tab: usize,
     },
     Split {
         /// "horizontal" or "vertical"
@@ -1602,6 +1707,10 @@ pub enum SplitNodeData {
 
 fn default_ratio() -> f64 {
     0.5
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Best-effort CWD capture for a Ghostty surface via /proc.
@@ -1660,14 +1769,31 @@ impl SplitNode {
     /// Falls back to empty strings if /proc is unavailable or the pid is unknown.
     pub fn to_data(&self) -> SplitNodeData {
         match self {
-            SplitNode::Leaf { pane_id, uuid, surface, .. } => {
+            SplitNode::Leaf { pane_id, uuid, surface, tabs, .. } => {
                 let cwd = get_surface_cwd(*surface);
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+                // tabs: list every tab when there is more than one.
+                let tab_list = if tabs.others.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut list: Vec<crate::tabs::TabData> = tabs
+                        .others
+                        .iter()
+                        .map(|t| crate::tabs::TabData {
+                            surface_uuid: t.uuid,
+                            cwd: tab_cwd(t.uuid),
+                        })
+                        .collect();
+                    list.insert(tabs.active.min(list.len()), crate::tabs::TabData { surface_uuid: *uuid, cwd: tab_cwd(*uuid) });
+                    list
+                };
                 SplitNodeData::Leaf {
                     pane_id: *pane_id,
                     surface_uuid: *uuid,
                     shell,
                     cwd,
+                    active_tab: if tab_list.is_empty() { 0 } else { tabs.active },
+                    tabs: tab_list,
                 }
             },
             SplitNode::Preview { .. } => {
@@ -1678,6 +1804,8 @@ impl SplitNode {
                     surface_uuid: Uuid::nil(),
                     shell: String::new(),
                     cwd: String::new(),
+                    tabs: Vec::new(),
+                    active_tab: 0,
                 }
             },
             SplitNode::Split { orientation, paned, start, end, .. } => {
@@ -1895,6 +2023,17 @@ impl FocusHistory {
         self.stack.retain(|&id| id != pane_id);
     }
 
+    /// tabs: a pane is known by its active tab's id; follow tab switches.
+    pub fn rename(&mut self, old: u64, new: u64) {
+        if old == new {
+            return;
+        }
+        self.stack.retain(|&id| id != new);
+        for id in self.stack.iter_mut().filter(|id| **id == old) {
+            *id = new;
+        }
+    }
+
     /// The most recently active pane for which `exists` holds.
     pub fn previous(&self, exists: impl Fn(u64) -> bool) -> Option<u64> {
         self.stack.iter().rev().copied().find(|&id| exists(id))
@@ -2053,6 +2192,495 @@ fn shell_cwd_for_pane(pane_uuid: &str) -> Option<String> {
     None
 }
 
+// ── tabs: terminal tabs inside a pane ────────────────────────────────────────
+//
+// See tabs.rs for the model: a Leaf's own fields are its active tab, its
+// background tabs live in `tabs.others`. Tab positions below are indices in
+// tab order (0-based, left to right).
+
+/// One tab of a pane, for socket listings.
+pub struct TabInfo {
+    pub uuid: Uuid,
+    pub index: usize,
+    /// The pane's visible tab.
+    pub active: bool,
+    /// The pane is the workspace's active pane.
+    pub pane_active: bool,
+    pub has_attention: bool,
+    pub title: String,
+}
+
+/// One terminal of a workspace, for surface.list.
+pub struct SurfaceInfo {
+    pub uuid: Uuid,
+    pub pane_id: u64,
+    pub gl_area: gtk4::GLArea,
+    /// Visible tab of the workspace's active pane.
+    pub active: bool,
+    pub tab_index: usize,
+    pub tab_count: usize,
+}
+
+/// A new single-tab leaf. With `[ui] always_show_tabs` it gets its tab bar
+/// right away; otherwise the pane widget stays a bare GLArea.
+fn new_leaf(pane_id: u64, gl_area: gtk4::GLArea, uuid: Uuid) -> SplitNode {
+    let mut tabs = crate::tabs::PaneTabs::default();
+    if crate::tabs::always_show_tabs() {
+        ensure_tabs_ui(&gl_area, &mut tabs);
+    }
+    let leaf = SplitNode::Leaf {
+        pane_id,
+        gl_area,
+        surface: std::ptr::null_mut(),
+        uuid,
+        has_attention: false,
+        tabs,
+    };
+    leaf.refresh_tab_bar();
+    leaf
+}
+
+/// Give a pane its tab bar + Stack, putting the container where the GLArea
+/// was (a Paned side or a workspace Stack page) and the GLArea in the Stack.
+fn ensure_tabs_ui(gl_area: &gtk4::GLArea, tabs: &mut crate::tabs::PaneTabs) -> crate::tabs::PaneTabsUi {
+    if let Some(ui) = &tabs.ui {
+        return ui.clone();
+    }
+    let ui = crate::tabs::PaneTabsUi::new();
+    if let Some(parent) = gl_area.parent() {
+        swap_child(&parent, gl_area.upcast_ref(), ui.container.upcast_ref());
+    }
+    ui.stack.add_child(gl_area);
+    tabs.ui = Some(ui.clone());
+    ui
+}
+
+/// Put `new` in `old`'s place. Unlike replace_child_in_parent this keeps the
+/// workspace Stack's visible page (the pane may be in a background workspace).
+fn swap_child(parent: &gtk4::Widget, old: &gtk4::Widget, new: &gtk4::Widget) {
+    if let Some(paned) = parent.downcast_ref::<gtk4::Paned>() {
+        // set_*_child unparents the old child.
+        if paned.start_child().as_ref() == Some(old) {
+            paned.set_start_child(Some(new));
+        } else {
+            paned.set_end_child(Some(new));
+        }
+    } else if let Some(stack) = parent.downcast_ref::<gtk4::Stack>() {
+        let name = stack.page(old).name().map(|n| n.to_string());
+        let visible = stack.visible_child_name().map(|n| n.to_string());
+        stack.remove(old);
+        stack.add_named(new, name.as_deref());
+        if let Some(v) = visible {
+            stack.set_visible_child_name(&v);
+        }
+    } else {
+        eprintln!("cmux: tabs: unexpected pane parent {}", parent.type_().name());
+        old.unparent();
+    }
+}
+
+/// Free a closed background tab, in the same order as close_active: remove
+/// the widget (its unrealize releases GL resources while the surface is
+/// alive), drop it from the registries, detach, then free the surface.
+fn free_tab(entry: crate::tabs::TabEntry, ui: Option<&crate::tabs::PaneTabsUi>) {
+    let ptr = entry.gl_area.as_ptr() as usize;
+    let surface = crate::tabs::live_surface(&entry.gl_area, entry.surface);
+    if let Some(ui) = ui {
+        ui.stack.remove(&entry.gl_area);
+    }
+    if let Ok(mut areas) = crate::ghostty::callbacks::GL_AREA_REGISTRY.lock() {
+        areas.retain(|p| p.0 as usize != ptr);
+    }
+    if let Ok(mut gl_to_surface) = crate::ghostty::callbacks::GL_TO_SURFACE.lock() {
+        gl_to_surface.remove(&ptr);
+    }
+    crate::ghostty::surface::detach_surface(&entry.gl_area);
+    if let Some(surface) = surface {
+        unsafe {
+            ffi::ghostty_surface_free(surface);
+        }
+        if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
+            registry.remove(&(surface as usize));
+        }
+    }
+}
+
+/// Working directory of a tab's shell, for the session (empty if unknown).
+fn tab_cwd(uuid: Uuid) -> String {
+    shell_cwd_for_pane(&uuid.to_string()).unwrap_or_default()
+}
+
+/// The leaf whose active tab is `leaf_id`.
+fn leaf_mut(node: &mut SplitNode, leaf_id: u64) -> Option<&mut SplitNode> {
+    if matches!(node, SplitNode::Leaf { pane_id, .. } if *pane_id == leaf_id) {
+        return Some(node);
+    }
+    match node {
+        SplitNode::Split { start, end, .. } => {
+            if let Some(found) = leaf_mut(start, leaf_id) {
+                return Some(found);
+            }
+            leaf_mut(end, leaf_id)
+        }
+        _ => None,
+    }
+}
+
+fn leaf_ref(node: &SplitNode, leaf_id: u64) -> Option<&SplitNode> {
+    match node.find_node(leaf_id)? {
+        leaf @ SplitNode::Leaf { .. } => Some(leaf),
+        _ => None,
+    }
+}
+
+/// (leaf id, tab position, tab count) of terminal `id`.
+fn tab_location_in(node: &SplitNode, id: u64) -> Option<(u64, usize, usize)> {
+    match node {
+        SplitNode::Leaf { pane_id, tabs, .. } => {
+            if *pane_id == id {
+                return Some((*pane_id, tabs.active, tabs.count()));
+            }
+            tabs.others
+                .iter()
+                .position(|t| t.pane_id == id)
+                .map(|i| (*pane_id, tabs.order_index(i), tabs.count()))
+        }
+        SplitNode::Preview { .. } => None,
+        SplitNode::Split { start, end, .. } => {
+            tab_location_in(start, id).or_else(|| tab_location_in(end, id))
+        }
+    }
+}
+
+fn terminal_for_gl_area_in(node: &SplitNode, gl_ptr: usize) -> Option<u64> {
+    match node {
+        SplitNode::Leaf { pane_id, gl_area, tabs, .. } => {
+            if gl_area.as_ptr() as usize == gl_ptr {
+                Some(*pane_id)
+            } else {
+                tabs.others
+                    .iter()
+                    .find(|t| t.gl_area.as_ptr() as usize == gl_ptr)
+                    .map(|t| t.pane_id)
+            }
+        }
+        SplitNode::Preview { .. } => None,
+        SplitNode::Split { start, end, .. } => terminal_for_gl_area_in(start, gl_ptr)
+            .or_else(|| terminal_for_gl_area_in(end, gl_ptr)),
+    }
+}
+
+/// Every terminal of a leaf in tab order: (pane_id, uuid, gl_area, attention, active).
+fn leaf_tabs_in_order(node: &SplitNode) -> Vec<(u64, Uuid, gtk4::GLArea, bool, bool)> {
+    let SplitNode::Leaf { pane_id, gl_area, uuid, has_attention, tabs, .. } = node else {
+        return Vec::new();
+    };
+    let mut out: Vec<_> = tabs
+        .others
+        .iter()
+        .map(|t| (t.pane_id, t.uuid, t.gl_area.clone(), t.has_attention, false))
+        .collect();
+    out.insert(tabs.active.min(out.len()), (*pane_id, *uuid, gl_area.clone(), *has_attention, true));
+    out
+}
+
+fn refresh_tab_bars_in(node: &SplitNode) {
+    match node {
+        SplitNode::Leaf { .. } => node.refresh_tab_bar(),
+        SplitNode::Preview { .. } => {}
+        SplitNode::Split { start, end, .. } => {
+            refresh_tab_bars_in(start);
+            refresh_tab_bars_in(end);
+        }
+    }
+}
+
+impl SplitNode {
+    /// tabs: re-render this leaf's tab bar (titles, active tab, attention).
+    pub fn refresh_tab_bar(&self) {
+        let SplitNode::Leaf { tabs, .. } = self else { return };
+        let Some(ui) = &tabs.ui else { return };
+        let views: Vec<crate::tabs::TabView> = leaf_tabs_in_order(self)
+            .iter()
+            .enumerate()
+            .map(|(i, (_, _, area, attention, active))| crate::tabs::TabView {
+                gl_ptr: area.as_ptr() as usize,
+                title: crate::tabs::title_for(area, i),
+                active: *active,
+                attention: *attention,
+            })
+            .collect();
+        ui.render(&views);
+    }
+}
+
+impl SplitEngine {
+    /// (leaf id, tab position, tab count) of terminal `id`; the leaf id is the
+    /// pane's active tab, so `leaf id != id` means `id` is a background tab.
+    pub fn tab_location(&self, id: u64) -> Option<(u64, usize, usize)> {
+        tab_location_in(&self.root, id)
+    }
+
+    /// True if terminal `id` is a background tab of its pane.
+    pub fn is_background_tab(&self, id: u64) -> bool {
+        self.tab_location(id).is_some_and(|(leaf, _, _)| leaf != id)
+    }
+
+    /// The terminal (tab) whose GLArea is `gl_ptr`.
+    pub fn terminal_for_gl_area(&self, gl_ptr: usize) -> Option<u64> {
+        terminal_for_gl_area_in(&self.root, gl_ptr)
+    }
+
+    /// UUID of terminal `id` (active or background tab).
+    pub fn find_uuid_for_pane(&self, id: u64) -> Option<String> {
+        self.root.find_uuid_for_pane(id)
+    }
+
+    pub fn refresh_tab_bars(&self) {
+        refresh_tab_bars_in(&self.root);
+    }
+
+    /// Open a new tab right of the active tab of the active pane, in that
+    /// terminal's working directory, and focus it. Returns its pane_id.
+    pub fn new_tab(&mut self) -> Option<u64> {
+        let active_id = self.active_pane_id;
+        if !matches!(self.root.find_node(active_id), Some(SplitNode::Leaf { .. })) {
+            return None; // browser preview
+        }
+        // Same cwd inheritance as splits, but only the working directory
+        // (TAB context), like a new workspace.
+        let source = self.active_terminal_source();
+        if let Some((surface, _)) = &source {
+            unsafe {
+                ffi::ghostty_surface_set_focus(*surface, false);
+            }
+        }
+        let new_id = self.allocate_pane_id();
+        let new_uuid = Uuid::new_v4();
+        let config = local_pane_config(source, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_TAB);
+        // Each tab is its own surface: own CMUX_SURFACE_ID (pane_env_vars).
+        let new_ids = crate::ghostty::surface::PaneIds { workspace: self.workspace_uuid, surface: new_uuid };
+        let (new_area, _surface_cell) = crate::ghostty::surface::create_surface(
+            &self.app,
+            self.ghostty_app,
+            Some(config),
+            new_id,
+            crate::ghostty::surface::SurfaceIoMode::Exec,
+            new_ids,
+        );
+        attach_terminal_context_menu(&new_area);
+
+        let old_area = {
+            let Some(SplitNode::Leaf { pane_id, gl_area, surface, uuid, has_attention, tabs }) =
+                leaf_mut(&mut self.root, active_id)
+            else {
+                return None;
+            };
+            let ui = ensure_tabs_ui(gl_area, tabs);
+            ui.stack.add_child(&new_area);
+            ui.stack.set_visible_child(&new_area);
+            let outgoing = crate::tabs::TabEntry {
+                pane_id: *pane_id,
+                gl_area: gl_area.clone(),
+                surface: *surface,
+                uuid: *uuid,
+                has_attention: *has_attention,
+            };
+            tabs.others.insert(tabs.active.min(tabs.others.len()), outgoing);
+            tabs.active += 1;
+            *pane_id = new_id;
+            *surface = std::ptr::null_mut(); // set after realize (see find_surface)
+            *uuid = new_uuid;
+            *has_attention = false;
+            std::mem::replace(gl_area, new_area.clone())
+        };
+        old_area.remove_css_class("active-pane");
+        self.focus_history.rename(active_id, new_id);
+        self.active_pane_id = new_id;
+        self.root.update_focus_css(new_id);
+        new_area.grab_focus();
+        self.refresh_tab_bars();
+        Some(new_id)
+    }
+
+    /// Bring tab `index` of the leaf `leaf_id` to the front. Moves Ghostty and
+    /// GTK focus only if that leaf is the active pane. Returns the leaf's new
+    /// id (the selected tab's pane_id).
+    fn select_tab_in(&mut self, leaf_id: u64, index: usize) -> Option<u64> {
+        let focus = leaf_id == self.active_pane_id;
+        let old_surface = if focus { self.find_surface(leaf_id) } else { None };
+        let (new_id, new_area, old_area) = {
+            let Some(SplitNode::Leaf { pane_id, gl_area, surface, uuid, has_attention, tabs }) =
+                leaf_mut(&mut self.root, leaf_id)
+            else {
+                return None;
+            };
+            if index >= tabs.count() {
+                return None;
+            }
+            if index == tabs.active {
+                return Some(leaf_id);
+            }
+            let outgoing = crate::tabs::TabEntry {
+                pane_id: *pane_id,
+                gl_area: gl_area.clone(),
+                surface: *surface,
+                uuid: *uuid,
+                has_attention: *has_attention,
+            };
+            let incoming = crate::tabs::swap_in(&mut tabs.others, tabs.active, outgoing, index);
+            tabs.active = index;
+            *pane_id = incoming.pane_id;
+            *surface = incoming.surface;
+            *uuid = incoming.uuid;
+            // Looking at a tab clears its attention marker.
+            *has_attention = incoming.has_attention && !focus;
+            let old_area = std::mem::replace(gl_area, incoming.gl_area);
+            if let Some(ui) = &tabs.ui {
+                ui.stack.set_visible_child(gl_area);
+            }
+            (*pane_id, gl_area.clone(), old_area)
+        };
+        old_area.remove_css_class("active-pane");
+        self.focus_history.rename(leaf_id, new_id);
+        if focus {
+            if let Some(surface) = old_surface {
+                unsafe {
+                    ffi::ghostty_surface_set_focus(surface, false);
+                }
+            }
+            self.active_pane_id = new_id;
+            self.root.update_focus_css(new_id);
+            if let Some(surface) = self.find_surface(new_id) {
+                unsafe {
+                    ffi::ghostty_surface_set_focus(surface, true);
+                }
+            }
+            new_area.grab_focus();
+        }
+        self.refresh_tab_bars();
+        Some(new_id)
+    }
+
+    /// Select tab `index` (0-based) of the active pane.
+    pub fn select_tab(&mut self, index: usize) -> bool {
+        match self.tab_location(self.active_pane_id) {
+            Some((leaf, _, count)) if index < count => self.select_tab_in(leaf, index).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Next/previous tab of the active pane, wrapping. False with one tab.
+    pub fn cycle_tab(&mut self, forward: bool) -> bool {
+        match self.tab_location(self.active_pane_id) {
+            Some((leaf, index, count)) if count > 1 => self
+                .select_tab_in(leaf, crate::tabs::cycle_index(index, count, forward))
+                .is_some(),
+            _ => false,
+        }
+    }
+
+    /// Close terminal tab `tab_id` if its pane has other tabs (the pane's
+    /// visible tab is replaced by its right, else left, neighbor). Does not
+    /// move focus to another pane. False if it is its pane's only tab.
+    pub fn close_tab(&mut self, tab_id: u64) -> bool {
+        let Some((mut leaf_id, index, count)) = self.tab_location(tab_id) else {
+            return false;
+        };
+        if count < 2 {
+            return false;
+        }
+        if leaf_id == tab_id {
+            let Some(next) = crate::tabs::neighbor_for_close(index, count) else {
+                return false;
+            };
+            match self.select_tab_in(leaf_id, next) {
+                Some(id) => leaf_id = id,
+                None => return false,
+            }
+        }
+        // tab_id is now a background tab of `leaf_id`.
+        let (entry, ui) = {
+            let Some(SplitNode::Leaf { tabs, .. }) = leaf_mut(&mut self.root, leaf_id) else {
+                return false;
+            };
+            let Some(pos) = tabs.others.iter().position(|t| t.pane_id == tab_id) else {
+                return false;
+            };
+            let order = tabs.order_index(pos);
+            let Some(entry) = crate::tabs::remove_background(&mut tabs.others, &mut tabs.active, order) else {
+                return false;
+            };
+            (entry, tabs.ui.clone())
+        };
+        self.focus_history.forget(tab_id);
+        free_tab(entry, ui.as_ref());
+        self.refresh_tab_bars();
+        true
+    }
+
+    /// Move tab `tab_id` to position `to` within its pane.
+    pub fn move_tab(&mut self, tab_id: u64, to: usize) -> bool {
+        let Some((leaf_id, from, count)) = self.tab_location(tab_id) else {
+            return false;
+        };
+        if to >= count {
+            return false;
+        }
+        if let Some(SplitNode::Leaf { tabs, .. }) = leaf_mut(&mut self.root, leaf_id) {
+            crate::tabs::move_in_order(&mut tabs.others, &mut tabs.active, from, to);
+        }
+        self.refresh_tab_bars();
+        true
+    }
+
+    /// Every tab of the pane holding terminal `tab_id`, in tab order.
+    pub fn pane_tabs(&self, tab_id: u64) -> Vec<TabInfo> {
+        let Some((leaf_id, _, _)) = self.tab_location(tab_id) else {
+            return Vec::new();
+        };
+        let Some(leaf) = leaf_ref(&self.root, leaf_id) else {
+            return Vec::new();
+        };
+        leaf_tabs_in_order(leaf)
+            .into_iter()
+            .enumerate()
+            .map(|(index, (_, uuid, area, has_attention, active))| TabInfo {
+                uuid,
+                index,
+                active,
+                pane_active: leaf_id == self.active_pane_id,
+                has_attention,
+                title: crate::tabs::title_for(&area, index),
+            })
+            .collect()
+    }
+
+    /// Every terminal of this workspace (all tabs of all panes), in pane
+    /// reading order then tab order.
+    pub fn all_surfaces(&self) -> Vec<SurfaceInfo> {
+        let mut leaves = Vec::new();
+        collect_leaves_in_order(&self.root, &mut leaves);
+        let mut out = Vec::new();
+        for leaf_id in leaves {
+            let Some(leaf) = leaf_ref(&self.root, leaf_id) else { continue };
+            let tabs = leaf_tabs_in_order(leaf);
+            let count = tabs.len();
+            for (index, (pane_id, uuid, gl_area, _, active)) in tabs.into_iter().enumerate() {
+                out.push(SurfaceInfo {
+                    uuid,
+                    pane_id,
+                    gl_area,
+                    active: active && leaf_id == self.active_pane_id,
+                    tab_index: index,
+                    tab_count: count,
+                });
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2066,6 +2694,8 @@ mod tests {
             surface_uuid: id,
             shell: "/bin/bash".to_string(),
             cwd: "/home/user".to_string(),
+            tabs: Vec::new(),
+            active_tab: 0,
         };
         if let SplitNodeData::Leaf { surface_uuid, pane_id, .. } = data {
             assert_eq!(surface_uuid, id);
@@ -2083,6 +2713,8 @@ mod tests {
             surface_uuid: Uuid::new_v4(),
             shell: "/bin/zsh".to_string(),
             cwd: "/tmp".to_string(),
+            tabs: Vec::new(),
+            active_tab: 0,
         };
         let json = serde_json::to_string(&leaf).expect("serialize failed");
         let restored: SplitNodeData = serde_json::from_str(&json).expect("deserialize failed");
@@ -2109,12 +2741,16 @@ mod tests {
                 surface_uuid: Uuid::new_v4(),
                 shell: String::new(),
                 cwd: String::new(),
+                tabs: Vec::new(),
+                active_tab: 0,
             }),
             end: Box::new(SplitNodeData::Leaf {
                 pane_id: 2,
                 surface_uuid: Uuid::new_v4(),
                 shell: String::new(),
                 cwd: String::new(),
+                tabs: Vec::new(),
+                active_tab: 0,
             }),
         };
         let json = serde_json::to_string(&split).expect("serialize failed");
@@ -2144,6 +2780,8 @@ mod tests {
             surface_uuid: Uuid::new_v4(),
             shell: String::new(),
             cwd: String::new(),
+            tabs: Vec::new(),
+            active_tab: 0,
         }
     }
 
@@ -2153,6 +2791,8 @@ mod tests {
             surface_uuid: Uuid::nil(),
             shell: String::new(),
             cwd: String::new(),
+            tabs: Vec::new(),
+            active_tab: 0,
         }
     }
 
@@ -2263,6 +2903,68 @@ mod tests {
         assert_eq!(h.previous(|id| id != 1), Some(2));
         h.forget(1);
         assert_eq!(h.previous(all), Some(2));
+    }
+
+    // ── tabs ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn tabs_session_round_trip() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let tab = |u: Uuid, cwd: &str| crate::tabs::TabData { surface_uuid: u, cwd: cwd.to_string() };
+        let data = SplitNodeData::Leaf {
+            pane_id: 1,
+            surface_uuid: b,
+            shell: "/bin/sh".to_string(),
+            cwd: "/tmp".to_string(),
+            tabs: vec![tab(a, "/"), tab(b, "/tmp"), tab(c, "/home/한글")],
+            active_tab: 1,
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let back: SplitNodeData = serde_json::from_str(&json).unwrap();
+        let SplitNodeData::Leaf { surface_uuid, tabs, active_tab, .. } = back else {
+            panic!("variant changed");
+        };
+        assert_eq!(surface_uuid, b);
+        assert_eq!(active_tab, 1);
+        assert_eq!(tabs, vec![tab(a, "/"), tab(b, "/tmp"), tab(c, "/home/한글")]);
+    }
+
+    #[test]
+    fn single_tab_panes_serialize_as_before() {
+        // No tab list / active index in the JSON of a single-tab pane, so files
+        // stay readable (and identical) for cmux builds without tabs.
+        let json = serde_json::to_value(leaf(3)).unwrap();
+        assert!(json.get("tabs").is_none());
+        assert!(json.get("active_tab").is_none());
+    }
+
+    #[test]
+    fn sessions_without_tabs_still_load() {
+        // A session.json leaf written before tabs existed.
+        let old = r#"{"type":"Split","orientation":"horizontal","ratio":0.5,
+            "start":{"type":"Leaf","pane_id":1,"surface_uuid":"11111111-1111-1111-1111-111111111111","shell":"/bin/zsh","cwd":"/tmp"},
+            "end":{"type":"Leaf","pane_id":2,"surface_uuid":"22222222-2222-2222-2222-222222222222","shell":"/bin/zsh","cwd":""}}"#;
+        let data: SplitNodeData = serde_json::from_str(old).unwrap();
+        let SplitNodeData::Split { start, .. } = data else { panic!("not a split") };
+        let SplitNodeData::Leaf { tabs, active_tab, cwd, .. } = *start else { panic!("not a leaf") };
+        assert!(tabs.is_empty());
+        assert_eq!(active_tab, 0);
+        assert_eq!(cwd, "/tmp");
+        // A tab entry without cwd loads too.
+        let t: crate::tabs::TabData =
+            serde_json::from_str(r#"{"surface_uuid":"11111111-1111-1111-1111-111111111111"}"#).unwrap();
+        assert!(t.cwd.is_empty());
+    }
+
+    #[test]
+    fn focus_history_follows_tab_switches() {
+        let mut h = FocusHistory::default();
+        h.record(1, 2); // pane 1 -> pane 2
+        // Pane 1 switches its visible tab from terminal 1 to terminal 7.
+        h.rename(1, 7);
+        assert_eq!(h.previous(|_| true), Some(7));
+        h.rename(5, 9); // unknown id: no-op
+        assert_eq!(h.previous(|_| true), Some(7));
     }
 
     #[test]

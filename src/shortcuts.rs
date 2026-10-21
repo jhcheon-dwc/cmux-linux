@@ -169,6 +169,23 @@ pub fn install_shortcuts(
                     handle_equalize_splits(&state);
                     gtk4::glib::Propagation::Stop
                 }
+                // -- tabs --
+                Some(ShortcutAction::NewTab) => {
+                    crate::tabs::handle_new_tab(&state);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::NextTab | ShortcutAction::NextTabAlt) => {
+                    crate::tabs::handle_cycle_tab(&state, true);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::PrevTab | ShortcutAction::PrevTabAlt) => {
+                    crate::tabs::handle_cycle_tab(&state, false);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(action) if crate::tabs::goto_tab_number(action).is_some() => {
+                    crate::tabs::handle_goto_tab(&state, crate::tabs::goto_tab_number(action).unwrap_or(0));
+                    gtk4::glib::Propagation::Stop
+                }
                 // Everything else passes through to Ghostty.
                 _ => gtk4::glib::Propagation::Proceed,
             }

@@ -133,6 +133,19 @@ contrib/wsl/setup.sh --skip-build --no-windows --claude-hooks
 - **스크롤 속도는 Ghostty 설정이 아니라 `wslg-input.ahk`의 `WheelFactor`로 조절하세요.** WSLg에서는 Ghostty의 `mouse-scroll-multiplier`로 휠과 터치패드를 따로 맞추기 어렵습니다(휠 스크롤의 첫 이벤트만 정밀 스크롤로 처리되어 첫 칸만 튐). Windows에서는 휠(120의 배수)과 터치패드(그 외 값)가 구분되므로, 스크립트가 휠만 가속합니다. 값을 바꾼 뒤 `contrib/wsl/setup.sh --skip-build`로 다시 설치하세요.
 - 패키지 버전은 원본과 같은 `0.1.0`이라 `dpkg` 정보로는 원본과 구분되지 않습니다.
 
+## 탭
+
+macOS cmux처럼 창(pane)마다 여러 터미널 탭을 열 수 있습니다. 탭이 2개 이상이면 창 위에 탭 막대가 나타납니다.
+
+- `Ctrl+Shift+T`로 현재 터미널의 작업 디렉터리에서 새 탭을 엽니다(현재 탭 오른쪽에 추가).
+- 탭에는 터미널 제목(OSC 0/2)이 표시되고, 없으면 `Terminal N`입니다. 백그라운드 탭에서 벨이나 알림이 오면 주황색 점이 붙습니다.
+- 탭 클릭: 선택, 가운데 클릭 또는 `×`: 닫기, 드래그: 같은 창 안에서 순서 바꾸기.
+- `Ctrl+Shift+X`는 현재 탭만 닫고, 마지막 탭일 때 창을 닫습니다.
+- 분할·포커스 이동·찾기·알림은 각 창의 보이는 탭을 대상으로 합니다. 탭마다 셸에 자기 `CMUX_SURFACE_ID`가 들어갑니다.
+- 세션에 탭 목록(UUID, 작업 디렉터리, 선택된 탭)이 저장되고 다시 열면 복원됩니다. 탭 이전에 저장된 세션 파일도 그대로 열립니다.
+- 탭이 하나여도 탭 막대를 보려면 `~/.config/cmux/config.toml`에 `[ui]` `always_show_tabs = true`를 넣습니다.
+- CLI: `cmux new-tab`, `cmux close-tab [UUID]`, `cmux select-tab <번호|UUID>`, `cmux next-tab`, `cmux prev-tab`, `cmux list-tabs [--pane UUID]`. 소켓 메서드는 `tab.new`/`tab.close`/`tab.select`/`tab.next`/`tab.prev`/`tab.list`/`tab.move`이고, `surface.list`의 각 항목에 `tab_index`/`tab_count`가 붙습니다. `pane.list`의 창 UUID는 그 창에서 보이는 탭의 UUID입니다.
+
 ## 단축키
 
 실제 기본값입니다(`src/config.rs`). 아래 원본 README의 단축키 표는 실제와 다릅니다. 메뉴와 도움말 창(햄버거 메뉴 → Keyboard Shortcuts)에는 설정을 반영한 현재 단축키가 표시됩니다.
@@ -147,7 +160,11 @@ contrib/wsl/setup.sh --skip-build --no-windows --claude-hooks
 | `Ctrl+B` | 사이드바 보이기/숨기기 | `toggle_sidebar` |
 | `Ctrl+D` | 오른쪽으로 분할 (현재 창의 작업 디렉터리에서 시작) | `split_right` |
 | `Ctrl+Shift+D` | 아래로 분할 (현재 창의 작업 디렉터리에서 시작) | `split_down` |
-| `Ctrl+Shift+X` | 창(pane) 닫기 | `close_pane` |
+| `Ctrl+Shift+X` | 현재 탭 닫기 (마지막 탭이면 창(pane) 닫기) | `close_pane` |
+| `Ctrl+Shift+T` | 새 탭 (현재 터미널의 작업 디렉터리에서 시작) | `new_tab` |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | 다음 / 이전 탭 | `next_tab` / `prev_tab` |
+| `Ctrl+PageDown` / `Ctrl+PageUp` | 다음 / 이전 탭 | `next_tab_alt` / `prev_tab_alt` |
+| `Alt+1`~`9` | 현재 창의 N번째 탭으로 이동 | `goto_tab_1`~`goto_tab_9` |
 | `Ctrl+Shift+←/→/↑/↓` | 이전 / 다음 창으로 포커스 (트리 순서 기준) | `focus_left` / `focus_right` / `focus_up` / `focus_down` |
 | `Ctrl+Alt+1`~`9` | N번째 창으로 포커스 (왼쪽→오른쪽, 위→아래 순서) | `focus_pane_1`~`focus_pane_9` |
 | ``Ctrl+Alt+` `` | 직전에 포커스했던 창으로 돌아가기 | `focus_last_pane` |
@@ -173,8 +190,8 @@ equalize_splits = "<Ctrl><Alt>0"
 
 ## 알려진 제한
 
-- 가로 탭이 없습니다. 왼쪽 사이드바의 워크스페이스가 탭 역할을 합니다(`Ctrl+N` 새로 만들기, `Ctrl+1`~`9` 이동).
-- 기본 단축키 `Ctrl+N`, `Ctrl+B`, `Ctrl+D`, `Ctrl+1`~`9`가 터미널 앱의 키와 겹칩니다. `~/.config/cmux/`의 `[shortcuts]`에서 바꿀 수 있습니다.
+- 탭은 같은 창 안에서만 옮길 수 있습니다(다른 창이나 워크스페이스로 끌어 옮기기는 없음).
+- 기본 단축키 `Ctrl+N`, `Ctrl+B`, `Ctrl+D`, `Ctrl+1`~`9`, `Alt+1`~`9`(셸의 숫자 인자), `Ctrl+Tab`이 터미널 앱의 키와 겹칩니다. `~/.config/cmux/`의 `[shortcuts]`에서 바꿀 수 있습니다.
 - 알림을 클릭해도 cmux 창으로 이동하지 않습니다.
 - 소켓 CLI의 `send-text`/`read-text`는 이 환경에서 동작하지 않았습니다.
 - 실행 시 GTK CSS 경고(`max-width` 등)가 나오지만 동작에는 영향이 없습니다.

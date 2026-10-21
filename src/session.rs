@@ -105,6 +105,8 @@ mod tests {
                     surface_uuid: uuid::Uuid::nil(),
                     shell: "/bin/sh".to_string(),
                     cwd: "/tmp".to_string(),
+                    tabs: Vec::new(), // tabs
+                    active_tab: 0,
                 },
             }],
         }

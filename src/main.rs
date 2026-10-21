@@ -23,6 +23,7 @@ mod find_bar;
 mod url_opener;
 #[allow(dead_code)] // hook mapping is used by the CLI (src/cli/mod.rs)
 mod agent_status; // agent-status
+mod tabs; // tabs
 
 const APP_ID: &str = "io.cmux.App";
 
@@ -103,6 +104,15 @@ popover.menu accelerator { color: #5b8dd9; font-size: 12px; }
 /* terminal-actions: find bar overlay */
 .cmux-find-bar { background-color: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; padding: 4px; }
 .cmux-find-counter { color: #888888; font-size: 12px; }
+/* tabs: per-pane tab bar */
+.cmux-tab-bar { background-color: #202020; border-bottom: 1px solid #3a3a3a; min-height: 26px; }
+.cmux-tab { padding: 2px 4px 2px 10px; color: #999999; font-size: 12px; border-right: 1px solid #2e2e2e; }
+.cmux-tab:hover { background-color: #2a2a2a; color: #cccccc; }
+.cmux-tab.active { background-color: #1a1a1a; color: #ffffff; box-shadow: inset 0 2px #5b8dd9; }
+.cmux-tab-close { min-width: 16px; min-height: 16px; padding: 0; margin: 0; background: transparent; border: none; box-shadow: none; color: #888888; font-size: 12px; opacity: 0; }
+.cmux-tab:hover .cmux-tab-close, .cmux-tab.active .cmux-tab-close { opacity: 1; }
+.cmux-tab-close:hover { color: #ffffff; background-color: rgba(255, 255, 255, 0.12); border-radius: 3px; }
+.cmux-tab-dot { background-color: #e8a444; border-radius: 50%; min-width: 6px; min-height: 6px; }
 /* agent-status: sidebar agent status badge, message and OSC 9;4 progress */
 .workspace-list row label.agent-status { font-size: 10px; font-weight: 600; padding: 0 5px; border-radius: 3px; color: #1a1a1a; }
 .workspace-list row label.agent-status.status-running { background-color: #5b8dd9; color: #ffffff; }
@@ -180,6 +190,7 @@ fn main() {
     let config = crate::config::load_config();
     // notifications
     crate::config::set_notifications_config(config.notifications.clone());
+    crate::tabs::set_always_show_tabs(config.ui.always_show_tabs); // tabs
 
     // Move runtime_handle, cmd_tx, cmd_rx into the activate closure.
     // cmd_rx is wrapped in Mutex<Option<...>> so it can be taken once from a Fn closure.
@@ -594,6 +605,7 @@ fn build_ui(
     // terminal-actions: find bar + window title from the focused pane.
     crate::find_bar::install(&window, &content_overlay);
     crate::header_bar::install_title_tracking(&window, &state);
+    crate::tabs::install(&state); // tabs
 
     // 7. Install keyboard shortcuts (config-driven, D-06)
     crate::shortcuts::install_shortcuts(&window, state.clone(), &sidebar_box, app, shortcut_map);
