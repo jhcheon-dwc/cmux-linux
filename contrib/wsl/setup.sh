@@ -6,7 +6,7 @@
 #   2. cmux 빌드 → .deb 패키지 → 설치
 #   3. 사용자 설정: 실행 래퍼, notify-send(Windows 토스트), 한글 입력 셸 설정, 다크 테마, Ghostty 설정
 #   4. 시작 메뉴 항목이 래퍼를 쓰도록 수정
-#   5. Windows 쪽: AutoHotkey로 한/영키 → Shift+Space (WSLg 창에서만)
+#   5. Windows 쪽: AutoHotkey로 한/영키 → Shift+Space, 마우스 휠 가속 (WSLg 창에서만)
 #   6. Windows: 알림을 클릭하면 해당 워크스페이스로 이동 (cmux-focus: URI 등록)
 #
 # 여러 번 실행해도 됩니다. 이미 있는 Ghostty/GTK 설정 파일은 덮어쓰지 않습니다.
@@ -97,9 +97,9 @@ if [ -f "$DESKTOP_FILE" ]; then
     sudo sed -i "s|^Exec=.*|Exec=$HOME/.local/bin/cmux-app|" "$DESKTOP_FILE"
 fi
 
-# ── 5. Windows: 한/영키 → Shift+Space ────────────────────────────────────────
+# ── 5. Windows: 한/영키 → Shift+Space, 마우스 휠 가속 ────────────────────────
 if [ "$WINDOWS" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
-    step "Windows: AutoHotkey 한/영키 스크립트 설치"
+    step "Windows: AutoHotkey 입력 보정 스크립트(wslg-input.ahk) 설치"
     WIN_HOME_W=$(powershell.exe -NoProfile -Command '$env:USERPROFILE' | tr -d '\r')
     WIN_LOCAL_W=$(powershell.exe -NoProfile -Command '$env:LOCALAPPDATA' | tr -d '\r')
     WIN_HOME=$(wslpath "$WIN_HOME_W")
@@ -109,18 +109,24 @@ if [ "$WINDOWS" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
         winget.exe install --id AutoHotkey.AutoHotkey -e --silent \
             --accept-package-agreements --accept-source-agreements || warn "AutoHotkey 설치 실패. 직접 설치 후 다시 실행하세요."
     fi
-    cp "$HERE/windows/hangul-wslg.ahk" "$WIN_HOME/hangul-wslg.ahk"
-    AHK_SCRIPT_W="$WIN_HOME_W\\hangul-wslg.ahk"
-    # 로그인 시 자동 실행 + 지금 바로 실행
+    cp "$HERE/windows/wslg-input.ahk" "$WIN_HOME/wslg-input.ahk"
+    rm -f "$WIN_HOME/hangul-wslg.ahk"  # 예전 버전 파일
+    AHK_SCRIPT_W="$WIN_HOME_W\\wslg-input.ahk"
+    # 예전 버전의 한/영키 전용 스크립트(hangul-wslg.ahk)는 정리하고, 새 스크립트를
+    # 시작프로그램에 등록한 뒤 바로 실행
     powershell.exe -NoProfile -Command "
-        \$lnk = Join-Path \$env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Startup\\hangul-wslg.lnk'
-        \$s = (New-Object -ComObject WScript.Shell).CreateShortcut(\$lnk)
+        Get-CimInstance Win32_Process -Filter \"Name='AutoHotkey64.exe'\" |
+            Where-Object { \$_.CommandLine -match 'hangul-wslg|wslg-input' } |
+            ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }
+        \$startup = Join-Path \$env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs\\Startup'
+        Remove-Item (Join-Path \$startup 'hangul-wslg.lnk') -ErrorAction SilentlyContinue
+        \$s = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path \$startup 'wslg-input.lnk'))
         \$s.TargetPath = '$AHK_EXE_W'
         \$s.Arguments = '\"$AHK_SCRIPT_W\"'
         \$s.Save()
         if (Test-Path '$AHK_EXE_W') { Start-Process '$AHK_EXE_W' -ArgumentList '\"$AHK_SCRIPT_W\"' }
     " >/dev/null
-    echo "  시작프로그램 등록: hangul-wslg.lnk"
+    echo "  시작프로그램 등록: wslg-input.lnk"
 fi
 
 # ── 6. Windows: 알림 클릭 → 워크스페이스 이동 (notifications) ────────────────

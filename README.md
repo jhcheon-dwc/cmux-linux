@@ -53,7 +53,7 @@ contrib/wsl/setup.sh
 2. 빌드: 서브모듈 → `scripts/setup-linux.sh`(Zig 0.15.2 + libghostty) → `cargo build` → `cmuxd-remote`(Go) → `.deb` 생성 후 `dpkg -i`
 3. 사용자 설정 설치 (아래 표)
 4. 시작 메뉴 항목이 실행 래퍼를 쓰도록 수정
-5. Windows: AutoHotkey v2 설치(winget), 한/영키 스크립트를 시작프로그램에 등록하고 실행
+5. Windows: AutoHotkey v2 설치(winget), 입력 보정 스크립트(한/영키, 휠 가속)를 시작프로그램에 등록하고 실행
 6. Windows: 알림 클릭 처리기 설치, `cmux-focus:` URI를 현재 사용자(HKCU)에 등록
 
 옵션: `--skip-build`(설정만 다시 적용), `--no-windows`(Windows 쪽 작업 생략)
@@ -67,7 +67,7 @@ contrib/wsl/setup.sh
 | `~/.config/cmux-wsl/ime.sh` | `contrib/wsl/shell/ime.sh` | `~/.zshrc`/`~/.bashrc`에서 불러옴. ibus 환경변수, 데몬 시작, 한글 엔진 지정 |
 | `~/.config/gtk-{3,4}.0/settings.ini` | `contrib/wsl/config/gtk/settings.ini` | GTK 다크 테마 (없을 때만 설치) |
 | `~/.config/ghostty/config.ghostty` | `contrib/wsl/config/ghostty/config.ghostty` | 폰트(D2Coding) 등. cmux와 Ghostty가 같이 씀 (없을 때만 설치) |
-| `%USERPROFILE%\hangul-wslg.ahk` | `contrib/wsl/windows/hangul-wslg.ahk` | WSLg 창(`msrdc.exe`)에서만 한/영키를 `Shift+Space`로 바꿈. WSLg가 한/영키를 전달하지 않기 때문 |
+| `%USERPROFILE%\wslg-input.ahk` | `contrib/wsl/windows/wslg-input.ahk` | WSLg 창(`msrdc.exe`)에서만 동작. 한/영키를 `Shift+Space`로 바꿈(WSLg가 한/영키를 전달하지 않음). 마우스 휠만 2배로 가속(터치패드는 그대로) |
 | `%LOCALAPPDATA%\cmux\cmux-focus.ps1` | `contrib/wsl/windows/cmux-focus.ps1` | 알림 클릭 처리기. `HKCU\Software\Classes\cmux-focus` URI로 등록되어, 클릭한 알림의 워크스페이스를 선택하고 cmux 창을 앞으로 가져옴 |
 
 ## 알림
@@ -100,6 +100,7 @@ command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
 - **Claude Code 세션 안에서 cmux를 띄우지 마세요.** Claude 환경변수(`CLAUDE_CODE_CHILD_SESSION` 등)를 물려받아, cmux 안의 Claude Code가 대화 기록을 저장하지 않습니다.
 - **Windows 알림의 발신자는 "Windows PowerShell"로 표시됩니다.** 알림이 안 보이면 Windows 알림 설정에서 PowerShell을 허용하세요.
 - **PowerToys로 한/영키를 리매핑하지 마세요.** 앱 단위 지정이 안 돼서 Windows 전체의 한/영 전환이 막힙니다. AutoHotkey 스크립트를 쓰세요.
+- **스크롤 속도는 Ghostty 설정이 아니라 `wslg-input.ahk`의 `WheelFactor`로 조절하세요.** WSLg에서는 Ghostty의 `mouse-scroll-multiplier`로 휠과 터치패드를 따로 맞추기 어렵습니다(휠 스크롤의 첫 이벤트만 정밀 스크롤로 처리되어 첫 칸만 튐). Windows에서는 휠(120의 배수)과 터치패드(그 외 값)가 구분되므로, 스크립트가 휠만 가속합니다. 값을 바꾼 뒤 `contrib/wsl/setup.sh --skip-build`로 다시 설치하세요.
 - 패키지 버전은 원본과 같은 `0.1.0`이라 `dpkg` 정보로는 원본과 구분되지 않습니다.
 
 ## 단축키
