@@ -44,6 +44,8 @@
 | 터미널 | 찾기 바(`Ctrl+Shift+F`), 링크 열기(Windows 브라우저), 창 제목 표시 | — |
 | 소켓/CLI | `send-text`/`read-text` 동작, `paste --submit`, 키 조합 전송(`send-key ctrl+c`), `current`, `read-selection`, 이전 워크스페이스 | `cmux --help` |
 
+UI는 [DESIGN.md](DESIGN.md)(Google Labs의 [DESIGN.md 형식](https://github.com/google-labs-code/design.md))에 정의한 디자인 시스템 "cmux Signal"을 따릅니다. 크롬은 터미널 배경과 같은 계열의 슬레이트 단계로 통일하고, 색은 에이전트 상태 신호(응답 필요 앰버, 실행 중 청록, 오류 빨강)에만 씁니다. 토큰은 `src/style/tokens.css`, 컴포넌트 스타일은 `src/style/components.css`에 있고, 컴포넌트는 토큰만 참조합니다. 검사: `npx @google/design.md lint DESIGN.md`.
+
 통합하면서 함께 고친 버그:
 
 - 워크스페이스를 닫아도 그 안의 셸이 계속 살아 있던 문제(터미널이 해제되지 않음)

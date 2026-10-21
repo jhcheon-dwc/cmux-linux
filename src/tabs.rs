@@ -248,7 +248,7 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     }
     item.set_tooltip_text(Some(&view.title));
 
-    let dot = gtk4::Label::new(None);
+    let dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     dot.add_css_class("cmux-tab-dot");
     dot.set_visible(view.attention);
     dot.set_valign(gtk4::Align::Center);
@@ -257,7 +257,7 @@ fn build_tab_item(view: &TabView) -> gtk4::Box {
     let label = gtk4::Label::new(Some(&view.title));
     label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     label.set_max_width_chars(24);
-    label.set_hexpand(true);
+    label.set_hexpand(false);
     label.set_xalign(0.0);
     item.append(&label);
 

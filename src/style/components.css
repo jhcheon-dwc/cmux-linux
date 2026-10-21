@@ -1,0 +1,179 @@
+/* cmux Signal components — see DESIGN.md "Components". Uses tokens.css only.
+   Theme widgets (buttons, headerbar, paned) are reset explicitly so the look
+   does not depend on the system GTK theme being light or dark. */
+
+window { background-color: var(--color-surface-sunken); font-family: var(--font-ui); color: var(--color-text-primary); }
+
+/* ── Header bar ───────────────────────────────────────────────────────────── */
+headerbar.cmux-headerbar,
+headerbar.cmux-headerbar:backdrop {
+  background: var(--color-surface-chrome);
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-line);
+  box-shadow: none;
+  min-height: 38px;
+  padding: 0 var(--space-sm);
+}
+headerbar.cmux-headerbar .title { font-size: var(--font-size-label); font-weight: 700; color: var(--color-text-secondary); }
+headerbar.cmux-headerbar button,
+button.headerbar-btn {
+  background: none; border: none; box-shadow: none;
+  color: var(--color-text-secondary);
+  min-width: 28px; min-height: 28px; padding: var(--space-xs); margin: 0 1px;
+  border-radius: var(--rounded-md);
+}
+headerbar.cmux-headerbar button:hover,
+button.headerbar-btn:hover { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+headerbar.cmux-headerbar button:active,
+headerbar.cmux-headerbar button:checked,
+button.headerbar-btn:active { background-color: var(--color-line-strong); }
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.sidebar { background-color: var(--color-surface-chrome); border-right: 1px solid var(--color-line); }
+.workspace-list { background-color: var(--color-surface-chrome); padding: var(--space-sm) 0; }
+.workspace-list row {
+  min-height: 34px;
+  padding: var(--space-md) var(--space-md) var(--space-md) var(--space-lg);
+  margin: 1px var(--space-sm);
+  border-radius: var(--rounded-md);
+  background: none;
+}
+.workspace-list row label { color: var(--color-text-secondary); font-size: var(--font-size-label); font-weight: 700; }
+.workspace-list row:hover:not(.active-workspace) { background-color: var(--color-surface-hover); }
+.workspace-list row:hover label { color: var(--color-text-primary); }
+/* Selection joins the terminal surface; lightness, not hue. */
+.workspace-list row.active-workspace { background-color: var(--color-neutral); }
+.workspace-list row.active-workspace label { color: var(--color-text-primary); }
+.rename-entry { font-size: var(--font-size-label); padding: var(--space-xxs) var(--space-xs); }
+
+button.sidebar-add-btn {
+  min-height: 34px; padding: var(--space-sm) var(--space-xl);
+  background: none; box-shadow: none; border: none; border-radius: 0;
+  border-top: 1px solid var(--color-line);
+  color: var(--color-text-secondary); font-size: 18px;
+}
+button.sidebar-add-btn:hover { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+button.sidebar-close-btn {
+  min-width: 18px; min-height: 18px; padding: 0; margin: 0 0 0 var(--space-xs);
+  background: none; box-shadow: none; border: none; border-radius: var(--rounded-sm);
+  color: var(--color-text-secondary); font-size: var(--font-size-label); opacity: 0;
+}
+.workspace-list row:hover button.sidebar-close-btn { opacity: 1; }
+button.sidebar-close-btn:hover { color: var(--color-text-primary); background-color: var(--color-line-strong); }
+
+/* Unread attention: the one amber dot at the row's right edge. */
+.attention-dot {
+  background-color: var(--color-primary);
+  border-radius: var(--rounded-full);
+  min-width: 8px; min-height: 8px;
+  margin: 0 var(--space-xxs) 0 var(--space-sm);
+}
+
+/* SSH connection state (second line) */
+.workspace-list row label.connection-state { font-size: var(--font-size-caption); font-weight: 400; color: var(--color-text-secondary); }
+.workspace-list row label.connection-state.connected { color: var(--color-secondary); }
+.workspace-list row label.connection-state.reconnecting { color: var(--color-primary); }
+
+/* ── Agent status: lamp + state word in its signal color + message ───────── */
+.status-line { margin-top: var(--space-xxs); }
+.status-lamp { min-width: 7px; min-height: 7px; border-radius: var(--rounded-full); background-color: var(--color-text-secondary); }
+.status-lamp.status-running { background-color: var(--color-secondary); }
+.status-lamp.status-needs-input { background-color: var(--color-primary); animation: needs-input-pulse 2s ease-in-out infinite; }
+.status-lamp.status-error { background-color: var(--color-tertiary); }
+.status-lamp.status-idle { background-color: var(--color-text-secondary); }
+@keyframes needs-input-pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+.workspace-list row label.agent-status { font-size: var(--font-size-caption); font-weight: 700; padding: 0; background: none; }
+.workspace-list row label.agent-status.status-running { color: var(--color-secondary); }
+.workspace-list row label.agent-status.status-needs-input { color: var(--color-primary); }
+.workspace-list row label.agent-status.status-error { color: var(--color-tertiary); }
+.workspace-list row label.agent-status.status-idle { color: var(--color-text-secondary); }
+.workspace-list row label.agent-status-message { font-size: var(--font-size-caption); font-weight: 400; color: var(--color-text-secondary); }
+
+progressbar.workspace-progress { margin-top: var(--space-xs); }
+progressbar.workspace-progress trough { min-height: 2px; border-radius: var(--rounded-full); background-color: var(--color-line-strong); border: none; }
+progressbar.workspace-progress progress { min-height: 2px; border-radius: var(--rounded-full); background-color: var(--color-secondary); border: none; }
+progressbar.workspace-progress.progress-error progress { background-color: var(--color-tertiary); }
+progressbar.workspace-progress.progress-paused progress { background-color: var(--color-primary); }
+
+/* ── Panes ────────────────────────────────────────────────────────────────── */
+paned > separator {
+  background: var(--color-surface-sunken); background-image: none; box-shadow: none;
+  min-width: 3px; min-height: 3px;
+}
+paned > separator:hover { background: var(--color-focus); }
+.active-pane,
+.active-pane:backdrop { border: 1px solid var(--color-focus); outline: none; }
+
+/* ── Per-pane tab bar ─────────────────────────────────────────────────────── */
+.cmux-tab-bar { background-color: var(--color-surface-chrome); min-height: 30px; }
+.cmux-tab {
+  min-width: 96px;
+  padding: 0 var(--space-sm) 0 var(--space-lg);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body-sm);
+  border-right: 1px solid var(--color-line);
+  box-shadow: inset 0 -1px var(--color-line);
+}
+.cmux-tab:hover { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+/* The active tab takes the terminal surface and drops its bottom line, so it joins the pane. */
+.cmux-tab.active { background-color: var(--color-neutral); color: var(--color-text-primary); box-shadow: none; }
+button.cmux-tab-close {
+  min-width: 18px; min-height: 18px; padding: 0; margin: 0;
+  background: none; border: none; box-shadow: none; border-radius: var(--rounded-sm);
+  color: var(--color-text-secondary); font-size: var(--font-size-body-sm); opacity: 0;
+}
+.cmux-tab:hover button.cmux-tab-close,
+.cmux-tab.active button.cmux-tab-close { opacity: 1; }
+button.cmux-tab-close:hover { color: var(--color-text-primary); background-color: var(--color-line-strong); }
+.cmux-tab-dot { background-color: var(--color-primary); border-radius: var(--rounded-full); min-width: 6px; min-height: 6px; }
+
+/* ── Find bar (floating) ──────────────────────────────────────────────────── */
+.cmux-find-bar {
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--rounded-lg);
+  padding: var(--space-xs);
+  box-shadow: var(--shadow-float);
+}
+.cmux-find-bar entry { background-color: var(--color-neutral); color: var(--color-text-primary); border: 1px solid var(--color-line-strong); border-radius: var(--rounded-md); box-shadow: none; font-size: var(--font-size-body-sm); }
+.cmux-find-counter { color: var(--color-text-secondary); font-size: var(--font-size-caption); margin: 0 var(--space-sm); }
+
+/* ── Menus and popovers (floating) ────────────────────────────────────────── */
+popover.menu > contents,
+popover > contents {
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--rounded-lg);
+  box-shadow: var(--shadow-float);
+  color: var(--color-text-primary);
+}
+popover.menu modelbutton { padding: var(--space-sm) var(--space-lg); color: var(--color-text-primary); font-size: var(--font-size-label); border-radius: var(--rounded-sm); }
+popover.menu modelbutton:hover { background-color: var(--color-surface-hover); }
+popover.menu accelerator { color: var(--color-text-secondary); font-size: var(--font-size-body-sm); }
+popover.menu separator { background-color: var(--color-line); }
+
+/* ── SSH dialog ───────────────────────────────────────────────────────────── */
+.ssh-dialog { background-color: var(--color-surface-chrome); }
+.ssh-dialog entry { font-size: var(--font-size-label); padding: var(--space-md) var(--space-lg); }
+
+/* ── Browser preview pane ─────────────────────────────────────────────────── */
+.browser-preview, .preview-container { background-color: var(--color-surface-sunken); }
+.browser-url-bar { font-size: var(--font-size-label); padding: var(--space-xs) var(--space-md); background-color: var(--color-surface-raised); color: var(--color-text-primary); border-bottom: 1px solid var(--color-line); }
+.preview-empty, .preview-error { color: var(--color-text-secondary); font-size: var(--font-size-label); font-weight: 400; padding: 32px; }
+.preview-error { color: var(--color-tertiary); }
+.stream-indicator { font-size: var(--font-size-caption); font-weight: 700; color: var(--color-secondary); margin: 0 var(--space-xs); }
+.browser-nav-bar { background-color: var(--color-surface-chrome); padding: var(--space-xs) var(--space-md); border-bottom: 1px solid var(--color-line); }
+button.browser-nav-btn {
+  min-width: 28px; min-height: 28px; padding: var(--space-xs); margin: 0 var(--space-xxs);
+  border-radius: var(--rounded-md); background: none; box-shadow: none; border: none;
+  color: var(--color-text-secondary); font-size: var(--font-size-label);
+}
+button.browser-nav-btn:hover { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+button.browser-nav-btn:active { background-color: var(--color-line-strong); }
+button.browser-nav-btn:disabled { opacity: 0.4; }
+.browser-nav-go { color: var(--color-text-primary); font-weight: 700; }
+.browser-nav-devtools { margin-left: var(--space-xs); }
+.browser-nav-devtools:checked { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+.devtools-overlay { background-color: alpha(var(--color-surface-sunken), 0.92); }
+.devtools-snapshot { color: var(--color-text-primary); font-family: monospace; font-size: var(--font-size-body-sm); padding: var(--space-xl); }

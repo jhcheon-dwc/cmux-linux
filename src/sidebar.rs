@@ -10,7 +10,7 @@ use std::rc::Rc;
 ///
 /// Per UI-SPEC:
 /// - Width: 160px (set_size_request(160, -1))
-/// - Background: #242424 (applied via global CssProvider in main.rs)
+/// - Styling: src/style/components.css (cmux Signal design system, DESIGN.md)
 /// - Row height: 36px min-height (CSS)
 /// - Row padding: 8px top/bottom, 16px left/right
 /// - Active row: #5b8dd9 background, #ffffff text, font-weight 600
@@ -99,10 +99,11 @@ pub struct SidebarRow {
     pub name_label: gtk4::Label,
     pub subtitle_label: gtk4::Label,
     pub status_box: gtk4::Box,
+    pub status_lamp: gtk4::Box,
     pub status_badge: gtk4::Label,
     pub status_message: gtk4::Label,
     pub progress: gtk4::ProgressBar,
-    pub attention_dot: gtk4::Label,
+    pub attention_dot: gtk4::Box,
     pub close_button: gtk4::Button,
 }
 
@@ -125,8 +126,14 @@ impl SidebarRow {
         subtitle_label.set_visible(false);
         vbox.append(&subtitle_label);
 
-        let status_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
+        // Status line: lamp + state word in its signal color + agent message (DESIGN.md).
+        let status_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+        status_box.add_css_class("status-line");
         status_box.set_visible(false);
+        let status_lamp = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        status_lamp.add_css_class("status-lamp");
+        status_lamp.set_valign(gtk4::Align::Center);
+        status_box.append(&status_lamp);
         let status_badge = gtk4::Label::new(None);
         status_badge.add_css_class("agent-status");
         status_box.append(&status_badge);
@@ -145,7 +152,7 @@ impl SidebarRow {
 
         hbox.append(&vbox);
 
-        let attention_dot = gtk4::Label::new(None);
+        let attention_dot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         attention_dot.add_css_class("attention-dot");
         attention_dot.set_valign(gtk4::Align::Center);
         attention_dot.set_visible(false);
@@ -168,6 +175,7 @@ impl SidebarRow {
             name_label,
             subtitle_label,
             status_box,
+            status_lamp,
             status_badge,
             status_message,
             progress,
@@ -221,11 +229,13 @@ impl SidebarRow {
     pub fn set_agent_status(&self, status: Option<&crate::agent_status::AgentStatus>) {
         for s in crate::agent_status::AgentState::ALL {
             self.status_badge.remove_css_class(s.css_class());
+            self.status_lamp.remove_css_class(s.css_class());
         }
         match status {
             Some(st) => {
                 self.status_badge.set_text(st.state.label());
                 self.status_badge.add_css_class(st.state.css_class());
+                self.status_lamp.add_css_class(st.state.css_class());
                 let msg = st.message.as_deref().unwrap_or("");
                 self.status_message.set_text(msg);
                 self.status_message.set_tooltip_text(if msg.is_empty() { None } else { Some(msg) });

@@ -1,0 +1,44 @@
+/* cmux Signal design tokens — mirrors the front matter of DESIGN.md (repo root).
+   Change values in DESIGN.md first, then here. Components must use only these
+   variables (no literal colors in components.css or widget code). */
+window, popover, dialog {
+  /* colors */
+  --color-primary: #E5A54B;          /* signal: needs input / unread attention */
+  --color-secondary: #56B6C2;        /* signal: running */
+  --color-tertiary: #E06C75;         /* signal: error */
+  --color-success: #98C379;          /* signal: done */
+  --color-neutral: #282C34;          /* terminal surface; selected row; active tab */
+  --color-surface-sunken: #1B1F27;   /* gutters, window background */
+  --color-surface-chrome: #21252E;   /* header bar, sidebar, tab bar */
+  --color-surface-raised: #2C313B;   /* find bar, menus, popovers */
+  --color-surface-hover: #313641;    /* hover / pressed on chrome */
+  --color-line: #2C313A;             /* hairlines between regions */
+  --color-line-strong: #3B4150;      /* input outlines */
+  --color-text-primary: #E3E6EC;
+  --color-text-secondary: #A2A9B6;
+  --color-focus: #8A93A6;            /* focused pane outline, selected-row bar */
+  --color-on-primary: #1B1F27;
+
+  /* typography */
+  --font-ui: "Noto Sans CJK KR", sans-serif;
+  --font-size-label: 13px;           /* label-md, title-sm, body-md */
+  --font-size-body-sm: 12px;         /* body-sm */
+  --font-size-caption: 11px;         /* caption, status */
+
+  /* rounded */
+  --rounded-sm: 4px;
+  --rounded-md: 6px;
+  --rounded-lg: 8px;
+  --rounded-full: 999px;
+
+  /* spacing */
+  --space-xxs: 2px;
+  --space-xs: 4px;
+  --space-sm: 6px;
+  --space-md: 8px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+
+  /* elevation: floating layers only */
+  --shadow-float: 0 6px 16px rgba(0, 0, 0, 0.45);
+}
