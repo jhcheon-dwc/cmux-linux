@@ -67,7 +67,7 @@ contrib/wsl/setup.sh
 | `~/.config/cmux-wsl/ime.sh` | `contrib/wsl/shell/ime.sh` | `~/.zshrc`/`~/.bashrc`에서 불러옴. ibus 환경변수, 데몬 시작, 한글 엔진 지정 |
 | `~/.config/gtk-{3,4}.0/settings.ini` | `contrib/wsl/config/gtk/settings.ini` | GTK 다크 테마 (없을 때만 설치) |
 | `~/.config/ghostty/config.ghostty` | `contrib/wsl/config/ghostty/config.ghostty` | 폰트(D2Coding) 등. cmux와 Ghostty가 같이 씀 (없을 때만 설치) |
-| `%USERPROFILE%\wslg-input.ahk` | `contrib/wsl/windows/wslg-input.ahk` | WSLg 창(`msrdc.exe`)에서만 동작. 한/영키를 `Shift+Space`로 바꿈(WSLg가 한/영키를 전달하지 않음). 마우스 휠만 2배로 가속(터치패드는 그대로) |
+| `%USERPROFILE%\wslg-input.ahk` | `contrib/wsl/windows/wslg-input.ahk` | WSLg 창(`msrdc.exe`)에서만 동작. 한/영키를 `Shift+Space`로 바꿈(WSLg가 한/영키를 전달하지 않음). 마우스 휠만 3배로 가속(터치패드는 그대로) |
 | `%LOCALAPPDATA%\cmux\cmux-focus.ps1` | `contrib/wsl/windows/cmux-focus.ps1` | 알림 클릭 처리기. `HKCU\Software\Classes\cmux-focus` URI로 등록되어, 클릭한 알림의 워크스페이스를 선택하고 cmux 창을 앞으로 가져옴 |
 
 ## 알림
