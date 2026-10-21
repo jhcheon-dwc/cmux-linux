@@ -249,6 +249,7 @@ command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
 - 주소창에 주소를 넣고 `Enter`(`https://`는 자동으로 붙음). 페이지를 클릭·스크롤·타이핑하면 Chrome으로 전달됩니다.
 - 미리보기는 워크스페이스 전체를 채운 상태로 열립니다. 주소창 줄의 `⤡`/`⤢` 버튼이나 `Ctrl+Shift+Enter`로 터미널과 나란히 보기 / 전체 보기를 오갑니다.
 - 닫기: 주소창 줄 오른쪽 끝의 `✕`, `Ctrl+Shift+Q`, 또는 오른쪽 클릭 → **Close Browser**.
+- 디버깅 패널: 주소창 줄의 `{ }` 버튼이나 `F12`로 페이지 아래에 Console / Network / Elements / **Application** 탭이 열립니다. Application 탭에서는 Chrome DevTools처럼 Local·Session Storage, 쿠키(값 수정·삭제), IndexedDB, Cache Storage, Service Worker, Manifest를 보고 사이트 데이터를 지울 수 있습니다.
 - 에이전트가 `cmux browser ...` 명령으로 같은 브라우저를 조작할 수 있습니다(`cmux browser --help`).
 
 ## 원본과 다른 점

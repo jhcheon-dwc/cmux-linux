@@ -58,6 +58,8 @@ pub fn register_actions(
 
     // browser-devtools: win.browser-devtools("toggle"|"console"|"network"|
     // "elements"|"close"|"clear"|"hard-reload"|"chrome"|"eval:<js>")
+    // app-ui: also "application" and "application:<section>" (local|session|
+    // cookies|indexeddb|cache|sw|manifest|site)
     let action = gio::SimpleAction::new("browser-devtools", Some(glib::VariantTy::STRING));
     action.connect_activate(|_, param| {
         let arg = param.and_then(|p| p.str()).unwrap_or("toggle").to_string();

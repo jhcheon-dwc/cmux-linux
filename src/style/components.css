@@ -225,6 +225,36 @@ row.devtools-net-failed { background-color: alpha(var(--color-tertiary), 0.10); 
 row.devtools-net-failed .devtools-mono { color: var(--color-tertiary); }
 textview.devtools-elements, textview.devtools-elements > text { background-color: var(--color-surface-sunken); color: var(--color-text-primary); }
 textview.devtools-elements { padding: var(--space-md); }
+/* app-ui: devtools Application tab (storage, cookies, IndexedDB, caches, SW, manifest) */
+.devtools-app-sidebar { background-color: var(--color-surface-chrome); border-right: 1px solid var(--color-line); }
+list.devtools-app-sections, list.devtools-app-tree { background: none; }
+list.devtools-app-sections > row, list.devtools-app-tree > row { padding: var(--space-xxs) var(--space-md); min-height: 0; color: var(--color-text-secondary); }
+list.devtools-app-sections > row:hover, list.devtools-app-tree > row:hover { background-color: var(--color-surface-hover); }
+list.devtools-app-sections > row:selected, list.devtools-app-tree > row:selected { background-color: var(--color-neutral); color: var(--color-text-primary); box-shadow: inset 2px 0 var(--color-focus); }
+.devtools-app-section { font-size: var(--font-size-body-sm); }
+.devtools-app-group { color: var(--color-text-secondary); font-size: var(--font-size-caption); font-weight: 700; padding: var(--space-sm) var(--space-md) var(--space-xxs); }
+list.devtools-app-tree { background-color: var(--color-surface-chrome); border-right: 1px solid var(--color-line); }
+.devtools-app-db { font-family: monospace; font-size: var(--font-size-body-sm); font-weight: 700; }
+.devtools-app-store { font-family: monospace; font-size: var(--font-size-body-sm); padding-left: var(--space-lg); }
+.devtools-app-header { background-color: var(--color-surface-chrome); padding: var(--space-xxs) var(--space-md); border-bottom: 1px solid var(--color-line); }
+.devtools-app-title { color: var(--color-text-primary); font-size: var(--font-size-body-sm); font-weight: 700; }
+.devtools-app-unsupported { color: var(--color-text-secondary); font-size: var(--font-size-body-sm); }
+.devtools-app-pager { background-color: var(--color-surface-chrome); padding: var(--space-xxs) var(--space-md); border-top: 1px solid var(--color-line); }
+.devtools-app-pad { padding: var(--space-md); }
+.devtools-app-dim { color: var(--color-text-secondary); }
+.devtools-app-error { color: var(--color-tertiary); }
+button.devtools-app-row-btn { min-height: 18px; min-width: 18px; padding: 0; margin: 0; background: none; box-shadow: none; border: none; border-radius: var(--rounded-sm); color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+button.devtools-app-row-btn:hover { background-color: alpha(var(--color-tertiary), 0.15); color: var(--color-tertiary); }
+button.devtools-tool-btn.devtools-app-armed { color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary); }
+button.devtools-app-danger { min-height: 24px; padding: 0 var(--space-lg); margin-top: var(--space-sm); background: none; box-shadow: none; border: 1px solid var(--color-tertiary); border-radius: var(--rounded-sm); color: var(--color-tertiary); font-size: var(--font-size-body-sm); }
+button.devtools-app-danger:hover { background-color: alpha(var(--color-tertiary), 0.12); }
+button.devtools-app-danger:disabled { opacity: 0.4; }
+entry.devtools-app-cell { font-family: monospace; font-size: var(--font-size-body-sm); color: var(--color-text-primary); background: none; border: none; box-shadow: none; border-radius: 0; min-height: 0; padding: 0; }
+entry.devtools-app-cell:focus-within { background-color: var(--color-neutral); box-shadow: inset 0 -1px var(--color-focus); }
+checkbutton.devtools-app-check { color: var(--color-text-primary); font-size: var(--font-size-body-sm); }
+levelbar.devtools-app-usage trough { min-height: 6px; background-color: var(--color-line-strong); border: none; border-radius: var(--rounded-full); }
+levelbar.devtools-app-usage block.filled { background-color: var(--color-secondary); border: none; border-radius: var(--rounded-full); }
+levelbar.devtools-app-usage block.empty { background: none; border: none; }
 
 /* ── Inline tab rename (text-input in the tab) ────────────────────────────── */
 entry.cmux-tab-rename { background-color: var(--color-neutral); color: var(--color-text-primary); border: 1px solid var(--color-focus); border-radius: var(--rounded-sm); box-shadow: none; min-height: 22px; padding: 0 var(--space-sm); font-size: var(--font-size-body-sm); }

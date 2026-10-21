@@ -1,5 +1,5 @@
 //! Developer tools panel for the browser preview pane (Console / Network /
-//! Elements), toggled by the `{ }` nav button or F12 while the preview has focus.
+//! Elements / Application), toggled by the `{ }` nav button or F12 while the preview has focus.
 //!
 //! Data comes from the agent-browser daemon actions that also back the CLI
 //! (`console`, `errors`, `requests`, `evaluate`, `snapshot`, `inspect`,
@@ -31,6 +31,7 @@ pub enum Tab {
     Console,
     Network,
     Elements,
+    Application, // app-ui
 }
 
 impl Tab {
@@ -39,6 +40,7 @@ impl Tab {
             Tab::Console => "console",
             Tab::Network => "network",
             Tab::Elements => "elements",
+            Tab::Application => "application", // app-ui
         }
     }
 }
@@ -76,7 +78,7 @@ struct Ui {
     paned: gtk4::Paned,
     panel: gtk4::Box,
     stack: gtk4::Stack,
-    tab_btns: [gtk4::ToggleButton; 3],
+    tab_btns: [gtk4::ToggleButton; 4], // app-ui: + Application
     clear_btn: gtk4::Button,
     refresh_btn: gtk4::Button,
     status: gtk4::Label,
@@ -88,6 +90,7 @@ struct Ui {
     net_summary: gtk4::Label,
     net_rows: RefCell<HashMap<String, NetRow>>,
     elements_view: gtk4::TextView,
+    app: Rc<crate::browser_devtools_app::AppPanel>, // app-ui
     socket: PathBuf,
     runtime: tokio::runtime::Handle,
     st: RefCell<PollState>,
@@ -102,7 +105,7 @@ thread_local! {
 
 /// One request/response round trip on the daemon socket, with a timeout.
 /// Returns the response `data` on success.
-fn daemon_request(socket: &Path, action: &str, mut params: Value, timeout: Duration) -> Result<Value, String> {
+pub(crate) fn daemon_request(socket: &Path, action: &str, mut params: Value, timeout: Duration) -> Result<Value, String> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("daemon not reachable: {e}"))?;
     let _ = stream.set_read_timeout(Some(timeout));
@@ -156,8 +159,20 @@ where
     W: FnOnce() -> T + Send + 'static,
     D: FnOnce(&Rc<Ui>, T) + 'static,
 {
-    let handle = ui.runtime.spawn_blocking(work);
-    let weak = Rc::downgrade(ui);
+    run_off_main_with(&ui.runtime, ui, work, done);
+}
+
+/// `run_off_main` for any panel object (the Application tab has its own);
+/// `done` is skipped once `owner` is gone. // app-ui
+pub(crate) fn run_off_main_with<U, T, W, D>(runtime: &tokio::runtime::Handle, owner: &Rc<U>, work: W, done: D)
+where
+    U: 'static,
+    T: Send + 'static,
+    W: FnOnce() -> T + Send + 'static,
+    D: FnOnce(&Rc<U>, T) + 'static,
+{
+    let handle = runtime.spawn_blocking(work);
+    let weak = Rc::downgrade(owner);
     glib::spawn_future_local(async move {
         if let Ok(result) = handle.await {
             if let Some(ui) = weak.upgrade() {
@@ -236,7 +251,7 @@ fn format_eval_result(v: &Value) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub(crate) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
@@ -247,14 +262,14 @@ fn truncate(s: &str, max: usize) -> String {
 
 // ── UI construction ────────────────────────────────────────────────────────
 
-fn label(text: &str, class: &str) -> gtk4::Label {
+pub(crate) fn label(text: &str, class: &str) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
     l.add_css_class(class);
     l.set_xalign(0.0);
     l
 }
 
-fn tool_btn(text: &str, tooltip: &str) -> gtk4::Button {
+pub(crate) fn tool_btn(text: &str, tooltip: &str) -> gtk4::Button {
     let b = gtk4::Button::with_label(text);
     b.add_css_class("devtools-tool-btn");
     b.set_tooltip_text(Some(tooltip));
@@ -287,12 +302,14 @@ pub fn attach(state: &Rc<RefCell<AppState>>, widgets: &crate::browser::PreviewPa
     let tab_console = gtk4::ToggleButton::with_label("Console");
     let tab_network = gtk4::ToggleButton::with_label("Network");
     let tab_elements = gtk4::ToggleButton::with_label("Elements");
+    let tab_app = gtk4::ToggleButton::with_label("Application"); // app-ui
     tab_network.set_group(Some(&tab_console));
     tab_elements.set_group(Some(&tab_console));
+    tab_app.set_group(Some(&tab_console));
     tab_console.set_active(true);
     let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
     toolbar.add_css_class("devtools-toolbar");
-    for t in [&tab_console, &tab_network, &tab_elements] {
+    for t in [&tab_console, &tab_network, &tab_elements, &tab_app] {
         t.add_css_class("devtools-tab");
         toolbar.append(t);
     }
@@ -354,10 +371,14 @@ pub fn attach(state: &Rc<RefCell<AppState>>, widgets: &crate::browser::PreviewPa
     elements_scroll.set_child(Some(&elements_view));
     elements_scroll.set_vexpand(true);
 
+    // Application tab: storage / cookies / IndexedDB / caches / SW / manifest.
+    let app = crate::browser_devtools_app::AppPanel::new(socket.clone(), runtime.clone()); // app-ui
+
     let stack = gtk4::Stack::new();
     stack.add_named(&console_box, Some(Tab::Console.name()));
     stack.add_named(&net_box, Some(Tab::Network.name()));
     stack.add_named(&elements_scroll, Some(Tab::Elements.name()));
+    stack.add_named(app.widget(), Some(Tab::Application.name())); // app-ui
     stack.set_vexpand(true);
 
     let panel = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -376,7 +397,7 @@ pub fn attach(state: &Rc<RefCell<AppState>>, widgets: &crate::browser::PreviewPa
         paned: widgets.devtools_paned.clone(),
         panel,
         stack,
-        tab_btns: [tab_console.clone(), tab_network.clone(), tab_elements.clone()],
+        tab_btns: [tab_console.clone(), tab_network.clone(), tab_elements.clone(), tab_app.clone()],
         clear_btn: clear_btn.clone(),
         refresh_btn: refresh_btn.clone(),
         status,
@@ -388,6 +409,7 @@ pub fn attach(state: &Rc<RefCell<AppState>>, widgets: &crate::browser::PreviewPa
         net_summary,
         net_rows: RefCell::new(HashMap::new()),
         elements_view,
+        app,
         socket,
         runtime,
         st: RefCell::new(PollState::default()),
@@ -405,7 +427,12 @@ pub fn attach(state: &Rc<RefCell<AppState>>, widgets: &crate::browser::PreviewPa
             set_panel_open(&ui, btn.is_active());
         }
     });
-    for (tab, b) in [(Tab::Console, &tab_console), (Tab::Network, &tab_network), (Tab::Elements, &tab_elements)] {
+    for (tab, b) in [
+        (Tab::Console, &tab_console),
+        (Tab::Network, &tab_network),
+        (Tab::Elements, &tab_elements),
+        (Tab::Application, &tab_app), // app-ui
+    ] {
         let weak = Rc::downgrade(&ui);
         b.connect_toggled(move |b| {
             if b.is_active() {
@@ -559,8 +586,10 @@ fn set_panel_open(ui: &Rc<Ui>, open: bool) {
             st.unread_errors = 0;
         }
         update_badge(ui);
-        if current_tab(ui) == Tab::Elements {
-            refresh_elements(ui);
+        match current_tab(ui) {
+            Tab::Elements => refresh_elements(ui),
+            Tab::Application => ui.app.refresh_current(), // app-ui
+            _ => {}
         }
         scroll_to_bottom(&ui.console_scroll);
     } else if ui.paned.end_child().is_some() {
@@ -573,21 +602,25 @@ fn current_tab(ui: &Ui) -> Tab {
     match ui.stack.visible_child_name().as_deref() {
         Some("network") => Tab::Network,
         Some("elements") => Tab::Elements,
+        Some("application") => Tab::Application, // app-ui
         _ => Tab::Console,
     }
 }
 
 fn show_tab(ui: &Rc<Ui>, tab: Tab) {
     ui.stack.set_visible_child_name(tab.name());
-    ui.clear_btn.set_visible(tab != Tab::Elements);
+    ui.clear_btn.set_visible(matches!(tab, Tab::Console | Tab::Network)); // app-ui
     ui.refresh_btn.set_visible(tab == Tab::Elements);
     let idx = match tab {
         Tab::Console => 0,
         Tab::Network => 1,
         Tab::Elements => 2,
+        Tab::Application => 3, // app-ui
     };
     if !ui.tab_btns[idx].is_active() {
+        // Its toggled handler re-enters show_tab, which does the rest once.
         ui.tab_btns[idx].set_active(true);
+        return;
     }
     match tab {
         Tab::Elements => refresh_elements(ui),
@@ -595,6 +628,7 @@ fn show_tab(ui: &Rc<Ui>, tab: Tab) {
             let _ = ui.eval_entry.grab_focus_without_selecting();
         }
         Tab::Network => {}
+        Tab::Application => ui.app.refresh_current(), // app-ui
     }
 }
 
@@ -867,7 +901,7 @@ fn clear_current(ui: &Rc<Ui>) {
             ui.net_summary.set_text("0 requests");
             ui.net_summary.remove_css_class("devtools-status-error");
         }
-        Tab::Elements => {}
+        Tab::Elements | Tab::Application => {} // app-ui: sections have their own Clear
     }
 }
 
@@ -965,7 +999,9 @@ fn poll(ui: &Rc<Ui>, first: bool) {
 }
 
 /// `win.browser-devtools` action: `""`/`"toggle"` toggles the newest preview's
-/// panel; `"console"`, `"network"`, `"elements"` open it on that tab;
+/// panel; `"console"`, `"network"`, `"elements"`, `"application"` open it on
+/// that tab (`"application:<section>"` with section local|session|cookies|
+/// indexeddb|cache|sw|manifest|site also picks the section);
 /// `"close"`, `"clear"`, `"hard-reload"`, `"chrome"` do what they say.
 pub fn activate_action(arg: &str) {
     let ui = PANELS.with(|p| p.borrow().iter().rev().find_map(|w| w.upgrade()));
@@ -989,6 +1025,20 @@ pub fn activate_action(arg: &str) {
         "hard-reload" => hard_reload(&ui),
         "chrome" => open_chrome_devtools(&ui),
         other => {
+            // app-ui: application[:<section>]
+            if let Some(section) = crate::browser_devtools_app::parse_app_arg(other) {
+                if let Some(sec) = section {
+                    ui.app.select(sec);
+                }
+                if !ui.btn.is_active() && current_tab(&ui) == Tab::Application {
+                    // Opening the panel refreshes the current section itself.
+                    ui.btn.set_active(true);
+                } else {
+                    ui.btn.set_active(true);
+                    show_tab(&ui, Tab::Application);
+                }
+                return;
+            }
             if let Some(script) = other.strip_prefix("eval:") {
                 ui.btn.set_active(true);
                 show_tab(&ui, Tab::Console);

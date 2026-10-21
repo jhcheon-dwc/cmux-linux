@@ -15,6 +15,7 @@ mod ssh;
 mod config;
 mod browser;
 mod browser_devtools; // browser-devtools
+mod browser_devtools_app; // app-ui: devtools Application tab
 mod menus;
 mod header_bar;
 mod ssh_hosts;
