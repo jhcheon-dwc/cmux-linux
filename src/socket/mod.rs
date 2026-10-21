@@ -351,6 +351,14 @@ async fn dispatch_line(
             resp_tx,
         },
 
+        // tabs
+        m if m.starts_with("tab.") => commands::SocketCommand::Tab {
+            req_id: req_id.clone(),
+            method: method.clone(),
+            params: params.clone(),
+            resp_tx,
+        },
+
         _ => commands::SocketCommand::NotImplemented {
             req_id: req_id.clone(),
             method: method.clone(),

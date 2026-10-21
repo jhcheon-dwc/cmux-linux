@@ -575,6 +575,8 @@ impl AppState {
                                 surface_uuid: uuid::Uuid::nil(),
                                 shell: String::new(),
                                 cwd: String::new(),
+                                tabs: Vec::new(), // tabs
+                                active_tab: 0,
                             }
                         };
                         // D-04: save active_pane_uuid per workspace
@@ -622,7 +624,8 @@ impl AppState {
         }
         let sid = surface_id.filter(|s| !s.is_empty())?;
         self.split_engines.iter().position(|engine| {
-            engine.all_panes().iter().any(|(uuid, _, _)| uuid.to_string() == sid)
+            // tabs: every tab's surface, not only each pane's visible one.
+            engine.all_surfaces().iter().any(|sf| sf.uuid.to_string() == sid)
         })
     }
 
@@ -797,8 +800,16 @@ fn find_leaf(
 ) -> Option<u64> {
     use crate::split_engine::SplitNode;
     match node {
-        SplitNode::Leaf { pane_id, gl_area, surface, .. } => {
-            pred(gl_area.as_ptr() as usize, *surface as usize).then_some(*pane_id)
+        SplitNode::Leaf { pane_id, gl_area, surface, tabs, .. } => {
+            pred(gl_area.as_ptr() as usize, *surface as usize)
+                .then_some(*pane_id)
+                // tabs: background tabs ring and notify too.
+                .or_else(|| {
+                    tabs.others
+                        .iter()
+                        .find(|t| pred(t.gl_area.as_ptr() as usize, t.surface as usize))
+                        .map(|t| t.pane_id)
+                })
         }
         SplitNode::Preview { .. } => None,
         SplitNode::Split { start, end, .. } => {

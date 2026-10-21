@@ -228,6 +228,24 @@ pub fn register_actions(
     let action = gio::SimpleAction::new("copy-url", None);
     action.set_enabled(false); // TODO: enable when BrowserManager.current_url() is available
     window.add_action(&action);
+
+    // tabs: win.new-tab / win.next-tab / win.prev-tab
+    let action = gio::SimpleAction::new("new-tab", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| {
+            crate::tabs::handle_new_tab(&state);
+        }
+    });
+    window.add_action(&action);
+    for (name, forward) in [("next-tab", true), ("prev-tab", false)] {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate({
+            let state = state.clone();
+            move |_, _| crate::tabs::handle_cycle_tab(&state, forward)
+        });
+        window.add_action(&action);
+    }
 }
 
 /// Run a Ghostty binding action on the terminal that has keyboard focus.
@@ -301,6 +319,16 @@ pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::Short
     app.set_accels_for_action("win.paste", &["<Ctrl><Shift>v"]);
     app.set_accels_for_action("win.find", &["<Ctrl><Shift>f"]);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+    // tabs: next/previous tab have two bindings each.
+    let pairs: &[(&str, &[A])] = &[
+        ("win.new-tab", &[A::NewTab]),
+        ("win.next-tab", &[A::NextTab, A::NextTabAlt]),
+        ("win.prev-tab", &[A::PrevTab, A::PrevTabAlt]),
+    ];
+    for (action, actions) in pairs {
+        let accels: Vec<&str> = actions.iter().filter_map(|a| shortcuts.accel(*a)).collect();
+        app.set_accels_for_action(action, &accels);
+    }
     SHORTCUTS.with(|s| *s.borrow_mut() = Some(shortcuts.clone()));
 }
 
@@ -315,6 +343,7 @@ pub fn build_hamburger_menu() -> gio::Menu {
     file_section.append(Some("New Workspace"), Some("win.new-workspace"));
     file_section.append(Some("New SSH Workspace"), Some("win.new-ssh-workspace"));
     file_section.append(Some("New Browser"), Some("win.browser-open"));
+    file_section.append(Some("New Tab"), Some("win.new-tab")); // tabs
     file_section.append(Some("Close Pane"), Some("win.close-pane"));
     file_section.append(Some("Close Workspace"), Some("win.close-workspace"));
     file_section.append(Some("Quit"), Some("app.quit"));
@@ -365,6 +394,7 @@ pub fn build_terminal_context_menu() -> gio::Menu {
     let pane_section = gio::Menu::new();
     pane_section.append(Some("Split Right"), Some("win.split-right"));
     pane_section.append(Some("Split Down"), Some("win.split-down"));
+    pane_section.append(Some("New Tab"), Some("win.new-tab")); // tabs
     pane_section.append(Some("Close Pane"), Some("win.close-pane"));
     menu.append_section(None, &pane_section);
 
@@ -456,6 +486,22 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     pane_group.add_shortcut(&shortcut(&accel(A::ResizeDown), "Move Divider Down"));
     pane_group.add_shortcut(&shortcut(&accel(A::EqualizeSplits), "Equalize Splits"));
     pane_section.add_group(&pane_group);
+    // tabs
+    let tab_group = gtk4::ShortcutsGroup::builder()
+        .title("Tabs")
+        .build();
+    tab_group.add_shortcut(&shortcut(&accel(A::NewTab), "New Tab"));
+    tab_group.add_shortcut(&shortcut(&accel(A::ClosePane), "Close Tab (closes the pane on its last tab)"));
+    tab_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::NextTab), accel(A::NextTabAlt)), "Next Tab"));
+    tab_group.add_shortcut(&shortcut(&format!("{} {}", accel(A::PrevTab), accel(A::PrevTabAlt)), "Previous Tab"));
+    tab_group.add_shortcut(&shortcut(
+        &accel_range(&[
+            A::GotoTab1, A::GotoTab2, A::GotoTab3, A::GotoTab4, A::GotoTab5,
+            A::GotoTab6, A::GotoTab7, A::GotoTab8, A::GotoTab9,
+        ]),
+        "Go to Tab 1-9",
+    ));
+    pane_section.add_group(&tab_group);
     window.add_section(&pane_section);
 
     // Edit section

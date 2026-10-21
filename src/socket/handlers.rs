@@ -54,7 +54,9 @@ fn locate_pane(s: &crate::app_state::AppState, target: &str) -> Option<(usize, u
     let mut prefix_hit: Option<(usize, u64)> = None;
     let mut prefix_hits = 0;
     for (ws_idx, engine) in s.split_engines.iter().enumerate() {
-        for (uuid, pane_id, _) in engine.all_panes() {
+        // tabs: every tab's surface, not only each pane's visible one.
+        for sf in engine.all_surfaces() {
+            let (uuid, pane_id) = (sf.uuid, sf.pane_id);
             let u = uuid.to_string();
             if u == target {
                 return Some((ws_idx, pane_id));
@@ -270,6 +272,8 @@ pub fn handle_socket_command(
                 // socket-cli
                 "surface.paste", "surface.read_selection", "surface.current",
             ];
+            // tabs
+            let methods: Vec<&str> = methods.into_iter().chain(crate::tabs::SOCKET_METHODS.iter().copied()).collect();
             let _ = resp_tx.send(ok(req_id, json!({"methods": methods})));
         }
 
@@ -547,17 +551,19 @@ pub fn handle_socket_command(
             let s = state.borrow();
             let mut panes: Vec<Value> = Vec::new();
             for (ws_idx, (ws, engine)) in s.workspaces.iter().zip(s.split_engines.iter()).enumerate() {
-                for (pane_uuid, pane_id, active) in engine.all_panes() {
+                // tabs: one entry per terminal tab, with its position in its pane.
+                for sf in engine.all_surfaces() {
                     // terminal-actions: last OSC title of this pane, if any.
-                    let title = engine
-                        .gl_area_for_pane(pane_id)
+                    let title = sf.gl_area.as_ref()
                         .and_then(|a| crate::header_bar::surface_for_widget(a.upcast_ref()))
                         .and_then(crate::header_bar::title_for_surface);
                     panes.push(json!({
-                        "uuid": pane_uuid.to_string(),
+                        "uuid": sf.uuid.to_string(),
                         "workspace_uuid": ws.uuid.to_string(),
-                        "active": active && ws_idx == s.active_index,
+                        "active": sf.active && ws_idx == s.active_index,
                         "title": title,
+                        "tab_index": sf.tab_index,
+                        "tab_count": sf.tab_count,
                     }));
                 }
             }
@@ -1289,6 +1295,15 @@ pub fn handle_socket_command(
                     let _ = resp_tx.send(err(req_id, "not_found", "workspace not found"));
                 }
             }
+        }
+
+        // tabs: main thread (creates/frees surfaces, moves focus for select).
+        SocketCommand::Tab { req_id, method, params, resp_tx } => {
+            let resp = match crate::tabs::handle_socket(state, &method, &params) {
+                Ok(result) => ok(req_id, result),
+                Err((code, msg)) => err(req_id, code, &msg),
+            };
+            let _ = resp_tx.send(resp);
         }
     }
 }

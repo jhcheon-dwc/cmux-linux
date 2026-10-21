@@ -220,6 +220,7 @@ pub fn install_title_tracking(
 pub fn on_set_title(surface: usize, title: &str) {
     let changed = TITLES.with(|t| t.borrow_mut().set(surface, title));
     if changed {
+        crate::tabs::on_title_changed(); // tabs: relabel tab bars
         eprintln!("cmux: set_title surface={surface:#x} title={title:?}");
         schedule_title_refresh();
     }

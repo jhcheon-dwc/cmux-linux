@@ -99,4 +99,7 @@ pub enum SocketCommand {
         message: Option<String>,
         resp_tx: RespTx,
     },
+    // tabs
+    /// `tab.*` (new/close/select/next/prev/list/move); handled in tabs.rs.
+    Tab { req_id: Value, method: String, params: Value, resp_tx: RespTx },
 }
