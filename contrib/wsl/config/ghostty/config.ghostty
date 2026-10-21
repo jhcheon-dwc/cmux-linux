@@ -2,3 +2,5 @@ font-family = "D2Coding ligature"
 font-size = 12
 window-padding-x = 6
 window-padding-y = 4
+# 스크롤 속도: 기본값(precision:1,discrete:3)의 두 배
+mouse-scroll-multiplier = precision:2,discrete:6
