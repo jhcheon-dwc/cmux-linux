@@ -54,6 +54,7 @@ contrib/wsl/setup.sh
 3. 사용자 설정 설치 (아래 표)
 4. 시작 메뉴 항목이 실행 래퍼를 쓰도록 수정
 5. Windows: AutoHotkey v2 설치(winget), 한/영키 스크립트를 시작프로그램에 등록하고 실행
+6. Windows: 알림 클릭 처리기 설치, `cmux-focus:` URI를 현재 사용자(HKCU)에 등록
 
 옵션: `--skip-build`(설정만 다시 적용), `--no-windows`(Windows 쪽 작업 생략)
 
@@ -67,6 +68,29 @@ contrib/wsl/setup.sh
 | `~/.config/gtk-{3,4}.0/settings.ini` | `contrib/wsl/config/gtk/settings.ini` | GTK 다크 테마 (없을 때만 설치) |
 | `~/.config/ghostty/config.ghostty` | `contrib/wsl/config/ghostty/config.ghostty` | 폰트(D2Coding) 등. cmux와 Ghostty가 같이 씀 (없을 때만 설치) |
 | `%USERPROFILE%\hangul-wslg.ahk` | `contrib/wsl/windows/hangul-wslg.ahk` | WSLg 창(`msrdc.exe`)에서만 한/영키를 `Shift+Space`로 바꿈. WSLg가 한/영키를 전달하지 않기 때문 |
+| `%LOCALAPPDATA%\cmux\cmux-focus.ps1` | `contrib/wsl/windows/cmux-focus.ps1` | 알림 클릭 처리기. `HKCU\Software\Classes\cmux-focus` URI로 등록되어, 클릭한 알림의 워크스페이스를 선택하고 cmux 창을 앞으로 가져옴 |
+
+## 알림
+
+Claude Code 등이 보내는 OSC 9/777 알림, 터미널 벨, `cmux notify` 명령이 같은 경로로 처리됩니다.
+
+- 알림을 보낸 창(pane)과 워크스페이스에 사이드바 점(attention)이 표시됩니다.
+- 그 창을 보고 있을 때(cmux 창이 활성이고 그 창에 포커스)는 알림을 띄우지 않습니다. 벨은 기존처럼 cmux 창이 비활성일 때만 알림을 띄웁니다.
+- Windows 알림을 클릭하면 해당 워크스페이스로 이동하고 cmux 창이 앞으로 옵니다.
+- 스크립트에서 보내기: `cmux notify --title "빌드" --body "끝났습니다" [--surface <UUID>] [--workspace <UUID>]` (생략하면 `$CMUX_SURFACE_ID`/`$CMUX_WORKSPACE_ID`, 없으면 현재 워크스페이스). 보낸 창을 지정하지 않으면(`--surface` 없음) 보고 있어도 알림을 띄웁니다. 소켓 메서드는 `notification.create`.
+
+`~/.config/cmux/config.toml`:
+
+```toml
+[notifications]
+enabled = true                # 데스크톱 알림(토스트) 표시. 꺼도 사이드바 점은 표시됨
+suppress_when_focused = true  # 보고 있는 창에서 온 OSC/cmux notify 알림은 무시
+bell = true                   # cmux 창이 비활성일 때 벨 알림 표시
+# 알림마다 실행할 명령 (sh -c, 기다리지 않음). 환경변수:
+# CMUX_NOTIFICATION_TITLE, CMUX_NOTIFICATION_BODY, CMUX_NOTIFICATION_KIND(bell|osc|cli),
+# CMUX_WORKSPACE_ID, CMUX_WORKSPACE_NAME, CMUX_SURFACE_ID
+command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
+```
 
 ## 사용 시 주의
 

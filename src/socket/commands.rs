@@ -71,4 +71,7 @@ pub enum SocketCommand {
     /// Move the active pane's nearest divider; `amount` is a fraction of the split.
     PaneResize       { req_id: Value, direction: String, amount: f64, resp_tx: RespTx },
     PaneEqualize     { req_id: Value, resp_tx: RespTx },
+    // notifications
+    /// `surface` / `workspace` are UUID strings; both None means the focused pane.
+    NotificationCreate { req_id: Value, title: String, body: String, surface: Option<String>, workspace: Option<String>, resp_tx: RespTx },
 }

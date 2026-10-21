@@ -155,6 +155,8 @@ fn main() {
     // Load config once at startup (D-06). ShortcutMap must be built inside
     // activate (after GTK init) because accelerator_parse requires GTK.
     let config = crate::config::load_config();
+    // notifications
+    crate::config::set_notifications_config(config.notifications.clone());
 
     // Move runtime_handle, cmd_tx, cmd_rx into the activate closure.
     // cmd_rx is wrapped in Mutex<Option<...>> so it can be taken once from a Fn closure.
@@ -390,7 +392,7 @@ fn build_ui(
     }
 
     // Phase 4: Process pending bell notifications and SSH events on the GTK main thread.
-    // action_cb sets BELL_PENDING from within ghostty_app_tick (already on main thread).
+    // action_cb queues bells/OSC notifications in PENDING_NOTIFICATIONS from within ghostty_app_tick.
     // SSH events arrive via ssh_event_rx from tokio tasks.
     {
         let state = state.clone();
@@ -401,13 +403,6 @@ fn build_ui(
             if clicked != 0 {
                 if let Some(engine) = state.borrow_mut().active_split_engine_mut() {
                     engine.activate_gl_area(clicked);
-                }
-            }
-            // Process bell notifications
-            if crate::ghostty::callbacks::BELL_PENDING.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                let pane_id = crate::ghostty::callbacks::BELL_PANE_ID.load(std::sync::atomic::Ordering::SeqCst);
-                if pane_id != 0 {
-                    state.borrow_mut().set_pane_attention(pane_id);
                 }
             }
             // Process SSH events
@@ -495,6 +490,23 @@ fn build_ui(
                             }
                         }
                     }
+                }
+            }
+            // notifications: bells and OSC 9/777 queued by action_cb
+            let pending = crate::ghostty::callbacks::PENDING_NOTIFICATIONS
+                .lock()
+                .map(|mut q| std::mem::take(&mut *q))
+                .unwrap_or_default();
+            for n in pending {
+                let source = state.borrow().resolve_surface(n.surface);
+                match source {
+                    Some((ws_idx, pane_id)) => {
+                        state.borrow_mut().notify(ws_idx, Some(pane_id), n.kind, &n.title, &n.body);
+                    }
+                    None if n.kind == crate::app_state::NotificationKind::Osc => {
+                        crate::app_state::notify_without_source(&n.title, &n.body);
+                    }
+                    None => {}
                 }
             }
             glib::ControlFlow::Continue

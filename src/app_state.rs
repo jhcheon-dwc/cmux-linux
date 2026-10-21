@@ -453,30 +453,91 @@ impl AppState {
         self.workspaces.get(self.active_index)
     }
 
-    /// Set attention on a specific pane. Called from bell handler.
-    /// Updates workspace has_attention and sidebar dot.
-    pub fn set_pane_attention(&mut self, pane_id: u64) {
-        for (idx, engine) in self.split_engines.iter_mut().enumerate() {
-            if engine.root.set_attention(pane_id, true) {
-                self.workspaces[idx].has_attention = engine.root.any_attention();
-                self.update_sidebar_attention(idx);
-
-                // Desktop notification when window is unfocused (NOTF-03)
-                let window_focused = self.gtk_app.active_window()
-                    .map(|w| w.is_active())
-                    .unwrap_or(false);
-                if !window_focused && self.workspaces[idx].has_attention {
-                    let should_notify = self.workspaces[idx].last_notification
-                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(5))
-                        .unwrap_or(true);
-                    if should_notify {
-                        self.workspaces[idx].last_notification = Some(std::time::Instant::now());
-                        send_bell_notification(&self.gtk_app, &self.workspaces[idx].name, idx);
-                    }
-                }
-                break;
-            }
+    /// Resolve a Ghostty surface pointer to (workspace index, pane_id).
+    /// pane_id alone is only unique per workspace, so this goes through the GLArea:
+    /// GL_TO_SURFACE (GLArea → surface) and each engine's leaves (GLArea → pane).
+    /// Falls back to the leaves' surface pointers (set once the GLArea realizes).
+    pub fn resolve_surface(&self, surface: usize) -> Option<(usize, u64)> {
+        if surface == 0 {
+            return None;
         }
+        let gl_area = crate::ghostty::callbacks::GL_TO_SURFACE
+            .lock()
+            .ok()
+            .and_then(|m| m.iter().find(|(_, &s)| s == surface).map(|(&gl, _)| gl));
+        self.split_engines.iter().enumerate().find_map(|(idx, engine)| {
+            find_leaf(&engine.root, &|gl, s| Some(gl) == gl_area || s == surface)
+                .map(|pane_id| (idx, pane_id))
+        })
+    }
+
+    /// Deliver a notification from pane `pane_id` of workspace `ws_idx` — bell, OSC 9/777
+    /// or `cmux notify`: sidebar attention, desktop toast and the `[notifications] command`
+    /// hook, subject to `notification_policy`. `pane_id: None` means the source pane is
+    /// unknown: attention goes to the active pane and focus suppression does not apply.
+    /// Returns true if the notification was delivered (not suppressed).
+    pub fn notify(
+        &mut self,
+        ws_idx: usize,
+        pane_id: Option<u64>,
+        kind: NotificationKind,
+        title: &str,
+        body: &str,
+    ) -> bool {
+        if ws_idx >= self.workspaces.len() || ws_idx >= self.split_engines.len() {
+            return false;
+        }
+        let cfg = crate::config::notifications_config();
+        let active_pane = self.split_engines[ws_idx].active_pane_id;
+        let window_active = self.gtk_app.active_window()
+            .map(|w| w.is_active())
+            .unwrap_or(false);
+        let source_focused = ws_idx == self.active_index && pane_id == Some(active_pane);
+        let pane_id = pane_id.unwrap_or(active_pane);
+        let policy = notification_policy(kind, window_active, source_focused, cfg);
+
+        if policy.attention {
+            let engine = &mut self.split_engines[ws_idx];
+            if !engine.root.set_attention(pane_id, true) {
+                // Not a terminal leaf (e.g. a browser preview): mark the active pane instead.
+                let active = engine.active_pane_id;
+                engine.root.set_attention(active, true);
+            }
+            self.workspaces[ws_idx].has_attention = self.split_engines[ws_idx].root.any_attention();
+            self.update_sidebar_attention(ws_idx);
+        }
+        if !policy.deliver {
+            if kind != NotificationKind::Bell {
+                eprintln!("cmux: {} notification suppressed (source pane is focused)", kind.as_str());
+            }
+            return false;
+        }
+        // Bells can arrive in bursts: at most one bell toast/hook per workspace per 5s.
+        if kind == NotificationKind::Bell {
+            let ws = &mut self.workspaces[ws_idx];
+            if ws.last_notification.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5)) {
+                return false;
+            }
+            ws.last_notification = Some(std::time::Instant::now());
+        }
+
+        let ws = &self.workspaces[ws_idx];
+        let ws_uuid = ws.uuid.to_string();
+        let (title, body) = match kind {
+            NotificationKind::Bell => ("Terminal Bell".to_string(), format!("{} - Terminal bell", ws.name)),
+            _ if title.is_empty() => ("cmux".to_string(), body.to_string()),
+            _ => (title.to_string(), body.to_string()),
+        };
+        if policy.toast {
+            send_desktop_notification(&title, &body, Some(&ws_uuid));
+        }
+        if let Some(command) = cfg.command.as_deref().filter(|c| !c.trim().is_empty()) {
+            let surface_uuid = self.split_engines[ws_idx].root.find_uuid_for_pane(pane_id)
+                .unwrap_or_default();
+            let env = notification_env(kind, &title, &body, &ws_uuid, &ws.name, &surface_uuid);
+            run_notification_hook(command, env);
+        }
+        true
     }
 
     /// Clear all attention in the workspace at `index`.
@@ -558,9 +619,149 @@ impl AppState {
     }
 }
 
-/// Send a desktop notification for a bell in the given workspace.
-fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _workspace_index: usize) {
-    send_desktop_notification("Terminal Bell", &format!("{} - Terminal bell", workspace_name));
+/// Source of a notification; exported to hooks as CMUX_NOTIFICATION_KIND.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationKind {
+    Bell,
+    /// OSC 9 / OSC 777 desktop notification from a terminal program.
+    Osc,
+    /// `cmux notify` / `notification.create` over the socket.
+    Cli,
+}
+
+impl NotificationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotificationKind::Bell => "bell",
+            NotificationKind::Osc => "osc",
+            NotificationKind::Cli => "cli",
+        }
+    }
+}
+
+/// What to do with one notification.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NotificationPolicy {
+    /// Set the pane/workspace attention dot.
+    pub attention: bool,
+    /// Treat it as delivered: run the hook, and show the toast if `toast`.
+    pub deliver: bool,
+    /// Show the desktop toast.
+    pub toast: bool,
+}
+
+/// Decide attention/delivery/toast for a notification.
+/// Bells keep the original behavior: always mark attention, deliver only while the cmux
+/// window is unfocused. OSC/CLI notifications are dropped entirely when the source pane
+/// is the focused pane of the active window (if `suppress_when_focused`).
+pub(crate) fn notification_policy(
+    kind: NotificationKind,
+    window_active: bool,
+    source_focused: bool,
+    cfg: &crate::config::NotificationsConfig,
+) -> NotificationPolicy {
+    match kind {
+        NotificationKind::Bell => NotificationPolicy {
+            attention: true,
+            deliver: !window_active,
+            toast: !window_active && cfg.enabled && cfg.bell,
+        },
+        NotificationKind::Osc | NotificationKind::Cli => {
+            let suppressed = cfg.suppress_when_focused && window_active && source_focused;
+            NotificationPolicy {
+                attention: !suppressed,
+                deliver: !suppressed,
+                toast: !suppressed && cfg.enabled,
+            }
+        }
+    }
+}
+
+/// Environment passed to the `[notifications] command` hook.
+pub(crate) fn notification_env(
+    kind: NotificationKind,
+    title: &str,
+    body: &str,
+    workspace_id: &str,
+    workspace_name: &str,
+    surface_id: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("CMUX_NOTIFICATION_TITLE", title.to_string()),
+        ("CMUX_NOTIFICATION_BODY", body.to_string()),
+        ("CMUX_NOTIFICATION_KIND", kind.as_str().to_string()),
+        ("CMUX_WORKSPACE_ID", workspace_id.to_string()),
+        ("CMUX_WORKSPACE_NAME", workspace_name.to_string()),
+        ("CMUX_SURFACE_ID", surface_id.to_string()),
+    ]
+}
+
+/// Run the user's notification hook via `sh -c` in its own process group, without
+/// blocking the main loop. A short-lived thread reaps it so it does not linger as a zombie.
+fn run_notification_hook(command: &str, env: Vec<(&'static str, String)>) {
+    use std::os::unix::process::CommandExt;
+    let spawned = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .envs(env)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn();
+    match spawned {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => eprintln!("cmux: failed to run notification command: {e}"),
+    }
+}
+
+/// Show a toast for an OSC 9/777 notification whose source surface could not be
+/// resolved to a pane (e.g. closed before the timer ran), as cmux did before it
+/// tracked notification sources. No attention or hook: there is no workspace.
+pub(crate) fn notify_without_source(title: &str, body: &str) {
+    if crate::config::notifications_config().enabled {
+        let title = if title.is_empty() { "cmux" } else { title };
+        send_desktop_notification(title, body, None);
+    }
+}
+
+/// pane_id of the first terminal leaf for which `pred(gl_area_ptr, surface_ptr)` holds.
+fn find_leaf(
+    node: &crate::split_engine::SplitNode,
+    pred: &dyn Fn(usize, usize) -> bool,
+) -> Option<u64> {
+    use crate::split_engine::SplitNode;
+    match node {
+        SplitNode::Leaf { pane_id, gl_area, surface, .. } => {
+            pred(gl_area.as_ptr() as usize, *surface as usize).then_some(*pane_id)
+        }
+        SplitNode::Preview { .. } => None,
+        SplitNode::Split { start, end, .. } => {
+            find_leaf(start, pred).or_else(|| find_leaf(end, pred))
+        }
+    }
+}
+
+/// Arguments for `notify-send`. The workspace UUID goes in a `cmux-workspace` string
+/// hint (ignored by notification servers that do not know it) so the WSL toast shim
+/// can make the toast clickable.
+pub(crate) fn notify_send_args(summary: &str, body: &str, workspace_id: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "--app-name=cmux".to_string(),
+        "--icon=utilities-terminal".to_string(),
+        "--expire-time=5000".to_string(),
+    ];
+    if let Some(id) = workspace_id.filter(|id| !id.is_empty()) {
+        args.push(format!("--hint=string:cmux-workspace:{id}"));
+    }
+    args.push("--".to_string());
+    args.push(summary.to_string());
+    args.push(body.to_string());
+    args
 }
 
 /// Send a desktop notification via the `notify-send` subprocess
@@ -572,18 +773,10 @@ fn send_bell_notification(_app: &gtk4::Application, workspace_name: &str, _works
 /// FdoNotificationDaemonSource._onNameVanished() to destroy the notification immediately.
 /// `notify-send` avoids this because it's a separate process whose D-Bus lifetime is
 /// independent of cmux.
-pub(crate) fn send_desktop_notification(summary: &str, body: &str) {
-    let summary = summary.to_string();
-    let body = body.to_string();
+pub(crate) fn send_desktop_notification(summary: &str, body: &str, workspace_id: Option<&str>) {
+    let args = notify_send_args(summary, body, workspace_id);
     std::thread::spawn(move || {
-        let result = std::process::Command::new("notify-send")
-            .arg("--app-name=cmux")
-            .arg("--icon=utilities-terminal")
-            .arg("--expire-time=5000")
-            .arg("--")
-            .arg(&summary)
-            .arg(&body)
-            .status();
+        let result = std::process::Command::new("notify-send").args(&args).status();
         match result {
             Ok(status) if !status.success() => {
                 eprintln!("cmux: notify-send exited with {status}");
@@ -594,4 +787,78 @@ pub(crate) fn send_desktop_notification(summary: &str, body: &str) {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    use crate::config::NotificationsConfig;
+
+    #[test]
+    fn notification_env_has_all_keys() {
+        let env = notification_env(NotificationKind::Osc, "제목", "본문", "ws-uuid", "Workspace 1", "sf-uuid");
+        let get = |k: &str| env.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("CMUX_NOTIFICATION_TITLE"), Some("제목"));
+        assert_eq!(get("CMUX_NOTIFICATION_BODY"), Some("본문"));
+        assert_eq!(get("CMUX_NOTIFICATION_KIND"), Some("osc"));
+        assert_eq!(get("CMUX_WORKSPACE_ID"), Some("ws-uuid"));
+        assert_eq!(get("CMUX_WORKSPACE_NAME"), Some("Workspace 1"));
+        assert_eq!(get("CMUX_SURFACE_ID"), Some("sf-uuid"));
+        assert_eq!(NotificationKind::Bell.as_str(), "bell");
+        assert_eq!(NotificationKind::Cli.as_str(), "cli");
+    }
+
+    #[test]
+    fn osc_suppressed_only_when_focused_pane_in_active_window() {
+        let cfg = NotificationsConfig::default();
+        for kind in [NotificationKind::Osc, NotificationKind::Cli] {
+            let p = notification_policy(kind, true, true, &cfg);
+            assert_eq!(p, NotificationPolicy { attention: false, deliver: false, toast: false });
+            // Other pane, or window in the background: delivered.
+            let all = NotificationPolicy { attention: true, deliver: true, toast: true };
+            assert_eq!(notification_policy(kind, true, false, &cfg), all);
+            assert_eq!(notification_policy(kind, false, true, &cfg), all);
+            assert_eq!(notification_policy(kind, false, false, &cfg), all);
+        }
+    }
+
+    #[test]
+    fn suppression_can_be_disabled() {
+        let cfg = NotificationsConfig { suppress_when_focused: false, ..Default::default() };
+        let p = notification_policy(NotificationKind::Osc, true, true, &cfg);
+        assert_eq!(p, NotificationPolicy { attention: true, deliver: true, toast: true });
+    }
+
+    #[test]
+    fn disabled_skips_toast_but_still_delivers() {
+        let cfg = NotificationsConfig { enabled: false, ..Default::default() };
+        let p = notification_policy(NotificationKind::Osc, false, false, &cfg);
+        assert_eq!(p, NotificationPolicy { attention: true, deliver: true, toast: false });
+        let p = notification_policy(NotificationKind::Bell, false, false, &cfg);
+        assert!(p.attention && p.deliver && !p.toast);
+    }
+
+    #[test]
+    fn bell_keeps_unfocused_window_behavior() {
+        let cfg = NotificationsConfig::default();
+        // Window active: attention only, even for a background pane.
+        let p = notification_policy(NotificationKind::Bell, true, false, &cfg);
+        assert_eq!(p, NotificationPolicy { attention: true, deliver: false, toast: false });
+        let p = notification_policy(NotificationKind::Bell, false, true, &cfg);
+        assert_eq!(p, NotificationPolicy { attention: true, deliver: true, toast: true });
+        let cfg = NotificationsConfig { bell: false, ..Default::default() };
+        assert!(!notification_policy(NotificationKind::Bell, false, true, &cfg).toast);
+    }
+
+    #[test]
+    fn notify_send_args_with_workspace_hint() {
+        let args = notify_send_args("-제목", "본문", Some("1234-abcd"));
+        assert_eq!(args, vec![
+            "--app-name=cmux", "--icon=utilities-terminal", "--expire-time=5000",
+            "--hint=string:cmux-workspace:1234-abcd", "--", "-제목", "본문",
+        ]);
+        let args = notify_send_args("t", "", None);
+        assert!(!args.iter().any(|a| a.starts_with("--hint")));
+        assert_eq!(&args[args.len() - 3..], ["--", "t", ""]);
+    }
 }
