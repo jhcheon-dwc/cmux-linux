@@ -64,4 +64,11 @@ pub enum SocketCommand {
 
     // -- Tier-2 stub (not_implemented) --
     NotImplemented   { req_id: Value, method: String, resp_tx: RespTx },
+
+    // pane-nav
+    /// Focus the `n`th (1-based) terminal pane of the active workspace.
+    PaneFocusNumber  { req_id: Value, n: u64, resp_tx: RespTx },
+    /// Move the active pane's nearest divider; `amount` is a fraction of the split.
+    PaneResize       { req_id: Value, direction: String, amount: f64, resp_tx: RespTx },
+    PaneEqualize     { req_id: Value, resp_tx: RespTx },
 }

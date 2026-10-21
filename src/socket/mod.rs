@@ -274,6 +274,20 @@ async fn dispatch_line(
             resp_tx,
         },
 
+        // pane-nav
+        "pane.focus_number" => commands::SocketCommand::PaneFocusNumber {
+            req_id: req_id.clone(),
+            n: params.get("n").and_then(|v| v.as_u64()).unwrap_or(0),
+            resp_tx,
+        },
+        "pane.resize" => commands::SocketCommand::PaneResize {
+            req_id: req_id.clone(),
+            direction: params.get("direction").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            amount: params.get("amount").and_then(|v| v.as_f64()).unwrap_or(crate::shortcuts::RESIZE_STEP),
+            resp_tx,
+        },
+        "pane.equalize" => commands::SocketCommand::PaneEqualize { req_id: req_id.clone(), resp_tx },
+
         // Route all other browser.* methods to the generic proxy (P0/P1 parity)
         _ if method.starts_with("browser.") => {
             let action = method.strip_prefix("browser.").unwrap().to_string();

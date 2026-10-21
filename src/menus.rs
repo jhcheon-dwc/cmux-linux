@@ -266,22 +266,39 @@ fn perform_terminal_binding(
     }
 }
 
+thread_local! {
+    /// The effective shortcut map, stored by register_accels so the shortcuts
+    /// help window shows `[shortcuts]` overrides from config.toml.
+    static SHORTCUTS: RefCell<Option<crate::config::ShortcutMap>> = const { RefCell::new(None) };
+}
+
 /// Register keyboard accelerators for GIO actions so menus show shortcut hints.
 /// Per Pitfall 3 from RESEARCH.md: GTK4 shows accels in menus ONLY if registered via set_accels_for_action.
-pub fn register_accels(app: &gtk4::Application) {
-    app.set_accels_for_action("win.new-workspace", &["<Ctrl>n"]);
-    app.set_accels_for_action("win.close-workspace", &["<Ctrl><Shift>w"]);
-    app.set_accels_for_action("win.new-ssh-workspace", &["<Ctrl><Shift>s"]);
-    app.set_accels_for_action("win.browser-open", &["<Ctrl><Shift>b"]);
-    app.set_accels_for_action("win.close-pane", &["<Ctrl><Shift>x"]);
-    app.set_accels_for_action("win.toggle-sidebar", &["<Ctrl>b"]);
-    app.set_accels_for_action("win.split-right", &["<Ctrl>d"]);
-    app.set_accels_for_action("win.split-down", &["<Ctrl><Shift>d"]);
+/// Accelerators of configurable actions come from the effective ShortcutMap.
+pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::ShortcutMap) {
+    use crate::config::ShortcutAction as A;
+    let configurable: &[(&str, A)] = &[
+        ("win.new-workspace", A::NewWorkspace),
+        ("win.close-workspace", A::CloseWorkspace),
+        ("win.new-ssh-workspace", A::NewSshWorkspace),
+        ("win.browser-open", A::BrowserOpen),
+        ("win.close-pane", A::ClosePane),
+        ("win.toggle-sidebar", A::ToggleSidebar),
+        ("win.split-right", A::SplitRight),
+        ("win.split-down", A::SplitDown),
+        ("win.rename-workspace", A::RenameWorkspace),
+    ];
+    for (action, shortcut_action) in configurable {
+        if let Some(accel) = shortcuts.accel(*shortcut_action) {
+            app.set_accels_for_action(action, &[accel]);
+        }
+    }
+    // Not configurable through [shortcuts].
     app.set_accels_for_action("win.copy", &["<Ctrl><Shift>c"]);
     app.set_accels_for_action("win.paste", &["<Ctrl><Shift>v"]);
     app.set_accels_for_action("win.find", &["<Ctrl>f"]);
-    app.set_accels_for_action("win.rename-workspace", &["<Ctrl><Shift>r"]);
     app.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+    SHORTCUTS.with(|s| *s.borrow_mut() = Some(shortcuts.clone()));
 }
 
 /// Build the hamburger menu model (D-11, D-12).
@@ -368,7 +385,18 @@ pub fn build_browser_context_menu() -> gio::Menu {
 /// Build GtkShortcutsWindow (D-14) with all shortcuts grouped by category.
 /// Uses GTK 4.14 add_section/add_group API.
 fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
+    use crate::config::ShortcutAction as A;
     let window = gtk4::ShortcutsWindow::builder().build();
+
+    // Configurable shortcuts are shown with their effective accelerators.
+    let map = SHORTCUTS
+        .with(|s| s.borrow().clone())
+        .unwrap_or_else(|| crate::config::ShortcutMap::from_config(&Default::default()));
+    let accel = |action: A| map.accel(action).unwrap_or_default().to_string();
+    let accel_range = |actions: &[A]| {
+        let accels: Vec<String> = actions.iter().map(|a| accel(*a)).collect();
+        numbered_accel_range(&accels)
+    };
 
     // Workspaces section
     let ws_section = gtk4::ShortcutsSection::builder()
@@ -379,12 +407,18 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     let ws_group = gtk4::ShortcutsGroup::builder()
         .title("Workspaces")
         .build();
-    ws_group.add_shortcut(&shortcut("<Ctrl>n", "New Workspace"));
-    ws_group.add_shortcut(&shortcut("<Ctrl><Shift>w", "Close Workspace"));
-    ws_group.add_shortcut(&shortcut("<Ctrl>bracketright", "Next Workspace"));
-    ws_group.add_shortcut(&shortcut("<Ctrl>bracketleft", "Previous Workspace"));
-    ws_group.add_shortcut(&shortcut("<Ctrl><Shift>r", "Rename Workspace"));
-    ws_group.add_shortcut(&shortcut("<Ctrl>1..9", "Switch to Workspace 1-9"));
+    ws_group.add_shortcut(&shortcut(&accel(A::NewWorkspace), "New Workspace"));
+    ws_group.add_shortcut(&shortcut(&accel(A::CloseWorkspace), "Close Workspace"));
+    ws_group.add_shortcut(&shortcut(&accel(A::NextWorkspace), "Next Workspace"));
+    ws_group.add_shortcut(&shortcut(&accel(A::PrevWorkspace), "Previous Workspace"));
+    ws_group.add_shortcut(&shortcut(&accel(A::RenameWorkspace), "Rename Workspace"));
+    ws_group.add_shortcut(&shortcut(
+        &accel_range(&[
+            A::Workspace1, A::Workspace2, A::Workspace3, A::Workspace4, A::Workspace5,
+            A::Workspace6, A::Workspace7, A::Workspace8, A::Workspace9,
+        ]),
+        "Switch to Workspace 1-9",
+    ));
     ws_section.add_group(&ws_group);
     window.add_section(&ws_section);
 
@@ -397,13 +431,27 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     let pane_group = gtk4::ShortcutsGroup::builder()
         .title("Panes")
         .build();
-    pane_group.add_shortcut(&shortcut("<Ctrl>d", "Split Right"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>d", "Split Down"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>x", "Close Pane"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>Left", "Focus Left"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>Right", "Focus Right"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>Up", "Focus Up"));
-    pane_group.add_shortcut(&shortcut("<Ctrl><Shift>Down", "Focus Down"));
+    pane_group.add_shortcut(&shortcut(&accel(A::SplitRight), "Split Right"));
+    pane_group.add_shortcut(&shortcut(&accel(A::SplitDown), "Split Down"));
+    pane_group.add_shortcut(&shortcut(&accel(A::ClosePane), "Close Pane"));
+    pane_group.add_shortcut(&shortcut(&accel(A::FocusLeft), "Focus Left"));
+    pane_group.add_shortcut(&shortcut(&accel(A::FocusRight), "Focus Right"));
+    pane_group.add_shortcut(&shortcut(&accel(A::FocusUp), "Focus Up"));
+    pane_group.add_shortcut(&shortcut(&accel(A::FocusDown), "Focus Down"));
+    // pane-nav
+    pane_group.add_shortcut(&shortcut(
+        &accel_range(&[
+            A::FocusPane1, A::FocusPane2, A::FocusPane3, A::FocusPane4, A::FocusPane5,
+            A::FocusPane6, A::FocusPane7, A::FocusPane8, A::FocusPane9,
+        ]),
+        "Focus Pane 1-9",
+    ));
+    pane_group.add_shortcut(&shortcut(&accel(A::FocusLastPane), "Focus Previous Pane"));
+    pane_group.add_shortcut(&shortcut(&accel(A::ResizeLeft), "Move Divider Left"));
+    pane_group.add_shortcut(&shortcut(&accel(A::ResizeRight), "Move Divider Right"));
+    pane_group.add_shortcut(&shortcut(&accel(A::ResizeUp), "Move Divider Up"));
+    pane_group.add_shortcut(&shortcut(&accel(A::ResizeDown), "Move Divider Down"));
+    pane_group.add_shortcut(&shortcut(&accel(A::EqualizeSplits), "Equalize Splits"));
     pane_section.add_group(&pane_group);
     window.add_section(&pane_section);
 
@@ -431,9 +479,10 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     let view_group = gtk4::ShortcutsGroup::builder()
         .title("View")
         .build();
-    view_group.add_shortcut(&shortcut("<Ctrl>b", "Toggle Sidebar"));
-    view_group.add_shortcut(&shortcut("<Ctrl><Shift>b", "Open Browser"));
-    view_group.add_shortcut(&shortcut("<Ctrl><Shift>s", "New SSH Workspace"));
+    view_group.add_shortcut(&shortcut(&accel(A::ToggleSidebar), "Toggle Sidebar"));
+    view_group.add_shortcut(&shortcut(&accel(A::BrowserOpen), "Open Browser"));
+    view_group.add_shortcut(&shortcut(&accel(A::BrowserClose), "Close Browser"));
+    view_group.add_shortcut(&shortcut(&accel(A::NewSshWorkspace), "New SSH Workspace"));
     view_section.add_group(&view_group);
     window.add_section(&view_section);
 
@@ -451,6 +500,26 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     window.add_section(&general_section);
 
     window
+}
+
+/// Show nine numbered accelerators as one GtkShortcutsShortcut range
+/// ("<Ctrl>1...<Ctrl>9") when they share modifiers and run 1..9 in order;
+/// otherwise list them space-separated.
+fn numbered_accel_range(accels: &[String]) -> String {
+    let parsed: Vec<_> = accels.iter().map(|a| gtk4::accelerator_parse(a)).collect();
+    let digits = [
+        gtk4::gdk::Key::_1, gtk4::gdk::Key::_2, gtk4::gdk::Key::_3,
+        gtk4::gdk::Key::_4, gtk4::gdk::Key::_5, gtk4::gdk::Key::_6,
+        gtk4::gdk::Key::_7, gtk4::gdk::Key::_8, gtk4::gdk::Key::_9,
+    ];
+    let uniform = parsed.len() == digits.len()
+        && parsed.iter().zip(digits).all(|(p, digit)| {
+            matches!(p, Some((key, mods)) if *key == digit && Some(*mods) == parsed[0].map(|(_, m)| m))
+        });
+    match (uniform, accels.first(), accels.last()) {
+        (true, Some(first), Some(last)) => format!("{first}...{last}"),
+        _ => accels.join(" "),
+    }
 }
 
 /// Helper to create a ShortcutsShortcut widget.

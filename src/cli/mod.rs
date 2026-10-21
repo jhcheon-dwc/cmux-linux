@@ -191,6 +191,22 @@ pub enum Commands {
     #[command(subcommand)]
     Browser(BrowserCommand),
 
+    // pane-nav
+    /// Focus the Nth pane (1-based, reading order) of the current workspace
+    FocusPaneNumber {
+        /// Pane number (1 = top-left)
+        n: u64,
+    },
+    /// Move the focused pane's nearest divider
+    ResizePane {
+        /// Direction to move the divider: left, right, up, down
+        direction: String,
+        /// Step as a fraction of the split's size
+        #[arg(long, default_value = "0.05")]
+        amount: f64,
+    },
+    /// Give all panes of the current workspace equal space
+    EqualizePanes,
 }
 
 /// Browser subcommands for `cmux browser <action>` / `cmux browser <surface> <action>`.
@@ -652,5 +668,12 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
         }
 
         Commands::Browser(cmd) => browser_command_to_rpc(cmd),
+
+        // pane-nav
+        Commands::FocusPaneNumber { n } => ("pane.focus_number", json!({"n": n})),
+        Commands::ResizePane { direction, amount } => {
+            ("pane.resize", json!({"direction": direction, "amount": amount}))
+        }
+        Commands::EqualizePanes => ("pane.equalize", json!({})),
     }
 }

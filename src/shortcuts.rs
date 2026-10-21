@@ -132,6 +132,43 @@ pub fn install_shortcuts(
                     handle_browser_close(&state);
                     gtk4::glib::Propagation::Stop
                 }
+                // -- pane-nav --
+                Some(action @ (
+                    ShortcutAction::FocusPane1 | ShortcutAction::FocusPane2 |
+                    ShortcutAction::FocusPane3 | ShortcutAction::FocusPane4 |
+                    ShortcutAction::FocusPane5 | ShortcutAction::FocusPane6 |
+                    ShortcutAction::FocusPane7 | ShortcutAction::FocusPane8 |
+                    ShortcutAction::FocusPane9
+                )) => {
+                    if let Some(n) = focus_pane_number(action) {
+                        handle_focus_pane_number(&state, n);
+                    }
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::FocusLastPane) => {
+                    handle_focus_last_pane(&state);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::ResizeLeft) => {
+                    handle_resize_pane(&state, FocusDirection::Left, RESIZE_STEP);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::ResizeRight) => {
+                    handle_resize_pane(&state, FocusDirection::Right, RESIZE_STEP);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::ResizeUp) => {
+                    handle_resize_pane(&state, FocusDirection::Up, RESIZE_STEP);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::ResizeDown) => {
+                    handle_resize_pane(&state, FocusDirection::Down, RESIZE_STEP);
+                    gtk4::glib::Propagation::Stop
+                }
+                Some(ShortcutAction::EqualizeSplits) => {
+                    handle_equalize_splits(&state);
+                    gtk4::glib::Propagation::Stop
+                }
                 // Everything else passes through to Ghostty.
                 _ => gtk4::glib::Propagation::Proceed,
             }
@@ -225,6 +262,70 @@ pub fn handle_focus_direction(state: &Rc<RefCell<AppState>>, direction: FocusDir
     if let Some(engine) = s.active_split_engine_mut() {
         engine.focus_next_in_direction(direction);
     }
+}
+
+// ── pane-nav ────────────────────────────────────────────────────────────────
+
+/// Divider step for keyboard resize, as a fraction of the split's size.
+pub const RESIZE_STEP: f64 = 0.05;
+
+/// Pane number (1-9) for a FocusPaneN action.
+pub fn focus_pane_number(action: ShortcutAction) -> Option<usize> {
+    Some(match action {
+        ShortcutAction::FocusPane1 => 1,
+        ShortcutAction::FocusPane2 => 2,
+        ShortcutAction::FocusPane3 => 3,
+        ShortcutAction::FocusPane4 => 4,
+        ShortcutAction::FocusPane5 => 5,
+        ShortcutAction::FocusPane6 => 6,
+        ShortcutAction::FocusPane7 => 7,
+        ShortcutAction::FocusPane8 => 8,
+        ShortcutAction::FocusPane9 => 9,
+        _ => return None,
+    })
+}
+
+/// Focus the Nth terminal pane of the active workspace (Ctrl+Alt+1..9).
+pub fn handle_focus_pane_number(state: &Rc<RefCell<AppState>>, n: usize) -> Option<u64> {
+    state.borrow_mut().active_split_engine_mut()?.focus_pane_number(n)
+}
+
+/// Jump back to the previously focused pane (Ctrl+Alt+`).
+pub fn handle_focus_last_pane(state: &Rc<RefCell<AppState>>) -> Option<u64> {
+    state.borrow_mut().active_split_engine_mut()?.focus_last_pane()
+}
+
+/// Move the active pane's nearest divider (Ctrl+Alt+Shift+arrows).
+pub fn handle_resize_pane(state: &Rc<RefCell<AppState>>, direction: FocusDirection, fraction: f64) -> bool {
+    let resized = state
+        .borrow_mut()
+        .active_split_engine_mut()
+        .map(|engine| engine.resize_active(direction, fraction))
+        .unwrap_or(false);
+    if resized {
+        save_session_after_layout(state);
+    }
+    resized
+}
+
+/// Give all panes of the active workspace equal space (Ctrl+Alt+=).
+pub fn handle_equalize_splits(state: &Rc<RefCell<AppState>>) {
+    if let Some(engine) = state.borrow_mut().active_split_engine_mut() {
+        engine.equalize();
+    }
+    save_session_after_layout(state);
+}
+
+/// Save the session once GTK has re-allocated the panes: split ratios are
+/// read from live Paned sizes, and nested Paneds only learn their new size
+/// on the next layout pass.
+fn save_session_after_layout(state: &Rc<RefCell<AppState>>) {
+    let state = state.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(250), move || {
+        if let Ok(s) = state.try_borrow() {
+            s.trigger_session_save();
+        }
+    });
 }
 
 /// Open a browser preview pane (Ctrl+Shift+B).

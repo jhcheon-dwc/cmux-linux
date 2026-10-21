@@ -105,6 +105,8 @@ pub fn handle_socket_command(
                 "browser.state.save", "browser.state.load",
                 // Debug
                 "debug.layout", "debug.type",
+                // pane-nav
+                "pane.focus_number", "pane.resize", "pane.equalize",
             ];
             let _ = resp_tx.send(ok(req_id, json!({"methods": methods})));
         }
@@ -401,9 +403,7 @@ pub fn handle_socket_command(
                     let mut s = state.borrow_mut();
                     let idx = s.active_index;
                     if let Some(engine) = s.split_engines.get_mut(idx) {
-                        engine.active_pane_id = pid;
-                        engine.root.update_focus_css(pid);
-                        engine.grab_active_focus();
+                        engine.focus_pane(pid);
                     }
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
@@ -425,8 +425,9 @@ pub fn handle_socket_command(
                         let mut s = state.borrow_mut();
                         let idx = s.active_index;
                         if let Some(engine) = s.split_engines.get_mut(idx) {
-                            engine.active_pane_id = pid;
-                            engine.root.update_focus_css(pid);
+                            // Through focus_pane so the previously active pane
+                            // stays in the focus history.
+                            engine.focus_pane(pid);
                             engine.close_active()
                         } else {
                             None
@@ -577,9 +578,7 @@ pub fn handle_socket_command(
                     let mut s = state.borrow_mut();
                     let idx = s.active_index;
                     if let Some(engine) = s.split_engines.get_mut(idx) {
-                        engine.active_pane_id = pid;
-                        engine.root.update_focus_css(pid);
-                        engine.grab_active_focus();
+                        engine.focus_pane(pid);
                     }
                     drop(s);
                     let _ = resp_tx.send(ok(req_id, json!({})));
@@ -590,14 +589,18 @@ pub fn handle_socket_command(
 
         SocketCommand::PaneLast { req_id, resp_tx } => {
             // SOCK-05: pane.last IS focus-intent — allowed to change focus.
-            // Phase 3 stub: re-grab focus on current active pane. Phase 4 tracks focus history.
-            {
-                let s = state.borrow();
-                if let Some(engine) = s.split_engines.get(s.active_index) {
+            // Jumps to the previously focused pane of the active workspace.
+            // With no history it re-grabs focus on the current pane, as before.
+            let pid = crate::shortcuts::handle_focus_last_pane(state);
+            let s = state.borrow();
+            let engine = s.active_split_engine();
+            if pid.is_none() {
+                if let Some(engine) = engine {
                     engine.grab_active_focus();
                 }
             }
-            let _ = resp_tx.send(ok(req_id, json!({})));
+            let uuid = engine.and_then(|e| e.active_pane_uuid());
+            let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid})));
         }
 
         // -- notification.* (Phase 4) --
@@ -825,6 +828,51 @@ pub fn handle_socket_command(
             } else {
                 let _ = resp_tx.send(err(req_id, "not_running", "No browser session active"));
             }
+        }
+
+        // pane-nav
+        SocketCommand::PaneFocusNumber { req_id, n, resp_tx } => {
+            // SOCK-05: focus-intent command (keyboard equivalent: Ctrl+Alt+N).
+            match crate::shortcuts::handle_focus_pane_number(state, n as usize) {
+                Some(pid) => {
+                    let uuid = state.borrow().active_split_engine()
+                        .and_then(|e| e.root.find_uuid_for_pane(pid));
+                    let _ = resp_tx.send(ok(req_id, json!({"uuid": uuid, "n": n})));
+                }
+                None => { let _ = resp_tx.send(err(req_id, "not_found", &format!("no pane {n}"))); }
+            }
+        }
+
+        SocketCommand::PaneResize { req_id, direction, amount, resp_tx } => {
+            // SOCK-05: layout-only; does not move focus.
+            let dir = match direction.as_str() {
+                "left" => Some(crate::split_engine::FocusDirection::Left),
+                "right" => Some(crate::split_engine::FocusDirection::Right),
+                "up" => Some(crate::split_engine::FocusDirection::Up),
+                "down" => Some(crate::split_engine::FocusDirection::Down),
+                _ => None,
+            };
+            match dir {
+                None => {
+                    let _ = resp_tx.send(err(req_id, "invalid_params", "direction must be left, right, up or down"));
+                }
+                Some(_) if !(amount > 0.0 && amount <= 1.0) => {
+                    let _ = resp_tx.send(err(req_id, "invalid_params", "amount must be in (0, 1]"));
+                }
+                Some(d) => {
+                    if crate::shortcuts::handle_resize_pane(state, d, amount) {
+                        let _ = resp_tx.send(ok(req_id, json!({})));
+                    } else {
+                        let _ = resp_tx.send(err(req_id, "no_split", "no divider in that direction"));
+                    }
+                }
+            }
+        }
+
+        SocketCommand::PaneEqualize { req_id, resp_tx } => {
+            // SOCK-05: layout-only; does not move focus.
+            crate::shortcuts::handle_equalize_splits(state);
+            let _ = resp_tx.send(ok(req_id, json!({})));
         }
 
         // -- Tier-2 stubs (D-10) --
