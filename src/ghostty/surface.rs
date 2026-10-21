@@ -27,6 +27,34 @@ struct ImState {
     len: Cell<usize>,
 }
 
+/// The codepoint this physical key produces with no modifiers in the active
+/// layout (e.g. 'v' for Ctrl+Shift+V). Ghostty needs it in two places: the
+/// kitty keyboard protocol encodes letter keys by this codepoint (with 0 they
+/// are not encoded at all, so Ctrl+V never reaches apps like Claude Code), and
+/// unicode keybindings such as ctrl+shift+c fall back to it. Same idea as
+/// Ghostty GTK's keyvalUnicodeUnshifted, but via translate_key, which does not
+/// allocate.
+fn unshifted_codepoint(ctrl: &gtk4::EventControllerKey, keycode: u32) -> u32 {
+    use gtk4::gdk::prelude::*;
+    use gtk4::prelude::*;
+
+    let Some(event) = ctrl
+        .current_event()
+        .and_then(|e| e.downcast::<gtk4::gdk::KeyEvent>().ok())
+    else {
+        return 0;
+    };
+    let Some(widget) = ctrl.widget() else {
+        return 0;
+    };
+    widget
+        .display()
+        .translate_key(keycode, gtk4::gdk::ModifierType::empty(), event.layout() as i32)
+        .and_then(|(key, _, _, _)| key.to_unicode())
+        .map(|ch| ch as u32)
+        .unwrap_or(0)
+}
+
 /// Send IM-committed text that is not tied to a key event (e.g. a finished
 /// Hangul syllable). Matches Ghostty GTK: clear the preedit, then send the text
 /// as a key press with no physical key so it produces no extra PTY encoding.
@@ -615,6 +643,7 @@ pub fn create_surface(
             input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_PRESS;
             input.text = text_ptr;
             input.consumed_mods = 0; // Not used in Phase 1
+            input.unshifted_codepoint = unshifted_codepoint(ctrl, keycode);
             input.composing = im.composing.get();
 
             let consumed = unsafe { ffi::ghostty_surface_key(surface, input) };
@@ -665,6 +694,7 @@ pub fn create_surface(
             input.action = ffi::ghostty_input_action_e_GHOSTTY_ACTION_RELEASE;
             input.text = std::ptr::null();
             input.consumed_mods = 0; // Not used in Phase 1
+            input.unshifted_codepoint = unshifted_codepoint(ctrl, keycode);
             unsafe {
                 ffi::ghostty_surface_key(surface, input);
             }
