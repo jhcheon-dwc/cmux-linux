@@ -470,7 +470,33 @@ fn build_ui(
     {
         let state_for_shutdown = state.clone();
         app.connect_shutdown(move |_| {
+            // Persist the latest layout and working directories before exiting.
+            if let Ok(s) = state_for_shutdown.try_borrow() {
+                s.save_session_now();
+            }
             state_for_shutdown.borrow_mut().shutdown_browser();
+        });
+    }
+
+    // Persist `cd`s: a directory change doesn't trigger a session save by itself,
+    // so poll each terminal's cwd and save when one changed. Polling (rather than
+    // saving on exit only) matters because a WSL shutdown kills cmux without a
+    // clean exit.
+    {
+        let state = state.clone();
+        let last = std::cell::RefCell::new(Vec::<(uuid::Uuid, String)>::new());
+        glib::timeout_add_seconds_local(5, move || {
+            if let Ok(s) = state.try_borrow() {
+                let now = s.terminal_cwds();
+                if *last.borrow() != now {
+                    let first = last.borrow().is_empty();
+                    *last.borrow_mut() = now;
+                    if !first {
+                        s.trigger_session_save();
+                    }
+                }
+            }
+            glib::ControlFlow::Continue
         });
     }
 
@@ -483,6 +509,9 @@ fn build_ui(
     window.connect_close_request({
         let state = state.clone();
         move |_win| {
+            if let Ok(s) = state.try_borrow() {
+                s.save_session_now();
+            }
             let count = state.borrow().workspaces.len();
             if count == 0 {
                 return gtk4::glib::Propagation::Proceed;

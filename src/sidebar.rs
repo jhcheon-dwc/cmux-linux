@@ -361,12 +361,17 @@ pub fn start_inline_rename(
         move |e| commit(e)
     });
 
-    // Focus-out: commit rename (same as Enter).
-    entry.connect_notify_local(Some("has-focus"), move |e, _| {
-        if !e.has_focus() {
-            commit(e);
-        }
+    // Focus-out: commit rename (same as Enter). GtkEntry hands focus to its
+    // internal GtkText, so the Entry's own `has-focus` turns false right after
+    // grab_focus; watching it closed the entry as soon as it opened when renaming
+    // from the keyboard (Ctrl+Shift+R). A focus controller's `leave` fires only
+    // when focus leaves the entry and everything inside it.
+    let focus = gtk4::EventControllerFocus::new();
+    focus.connect_leave({
+        let entry = entry.clone();
+        move |_| commit(&entry)
     });
+    entry.add_controller(focus);
 
     // Escape key: cancel rename and restore the label.
     let key_ctrl = gtk4::EventControllerKey::new();

@@ -246,6 +246,8 @@ pub struct PaneTabsUi {
     pub stack: gtk4::Stack,
     /// Views last rendered, to skip rebuilding an unchanged bar.
     rendered: Rc<RefCell<Vec<TabView>>>,
+    /// A tab name is being edited in place: don't rebuild the bar under it.
+    editing: Rc<std::cell::Cell<bool>>,
 }
 
 impl PaneTabsUi {
@@ -285,11 +287,20 @@ impl PaneTabsUi {
         });
         container.append(&bar);
         container.append(&stack);
-        PaneTabsUi { container, bar, stack, rendered: Rc::new(RefCell::new(Vec::new())) }
+        PaneTabsUi {
+            container,
+            bar,
+            stack,
+            rendered: Rc::new(RefCell::new(Vec::new())),
+            editing: Rc::new(std::cell::Cell::new(false)),
+        }
     }
 
     /// Show `views` (tab order) in the bar.
     pub fn render(&self, views: &[TabView]) {
+        if self.editing.get() {
+            return; // the inline rename entry lives in this bar
+        }
         // A renamed tab keeps its bar even when it is the pane's only tab;
         // otherwise the name would be invisible.
         let renamed = views.iter().any(|v| v.custom);
@@ -304,6 +315,99 @@ impl PaneTabsUi {
             self.bar.append(&build_tab_item(view));
         }
         *self.rendered.borrow_mut() = views.to_vec();
+    }
+}
+
+impl PaneTabsUi {
+    /// Edit tab `gl_ptr`'s name in place (in the tab bar, not a separate window:
+    /// under WSLg a new toplevel window doesn't receive keyboard focus). Enter or
+    /// leaving the field saves; Escape cancels. An empty name restores the
+    /// automatic title.
+    pub fn start_inline_rename(&self, state: &crate::app_state::AppStateRef, gl_ptr: usize, uuid: Uuid, current: &str) {
+        if self.editing.get() {
+            return;
+        }
+        let Some(index) = self.rendered.borrow().iter().position(|v| v.gl_ptr == gl_ptr) else { return };
+        let mut child = self.bar.first_child();
+        for _ in 0..index {
+            child = child.and_then(|c| c.next_sibling());
+        }
+        let Some(item) = child.and_downcast::<gtk4::Box>() else { return };
+        let Some(label) = item.first_child().and_then(|c| c.next_sibling()).and_downcast::<gtk4::Label>() else { return };
+
+        self.editing.set(true);
+        self.bar.set_visible(true);
+        let entry = gtk4::Entry::new();
+        entry.add_css_class("cmux-tab-rename");
+        entry.set_text(current);
+        entry.set_placeholder_text(Some("Tab name"));
+        entry.set_max_length(MAX_TITLE_CHARS as i32);
+        entry.set_width_chars(16);
+        item.insert_child_after(&entry, Some(&label));
+        label.set_visible(false);
+        entry.grab_focus();
+        entry.select_region(0, -1);
+
+        // Remove the entry once; then save (Some) or cancel (None) and re-render.
+        let done = Rc::new(std::cell::Cell::new(false));
+        let finish = {
+            let editing = self.editing.clone();
+            let state = Rc::downgrade(state);
+            let label = label.clone();
+            move |entry: &gtk4::Entry, save: bool| {
+                if done.replace(true) {
+                    return;
+                }
+                let text = entry.text().to_string();
+                if let Some(parent) = entry.parent().and_downcast::<gtk4::Box>() {
+                    parent.remove(entry);
+                }
+                label.set_visible(true);
+                editing.set(false);
+                // Deferred: focus-leave can fire while AppState is borrowed.
+                let state = state.clone();
+                glib::idle_add_local_once(move || {
+                    let Some(state) = state.upgrade() else { return };
+                    if save {
+                        apply_rename(&state, uuid, &text);
+                    }
+                    on_title_changed();
+                    // Back to the terminal, so typing continues where it was.
+                    if let Ok(s) = state.try_borrow() {
+                        if let Some(engine) = s.active_split_engine() {
+                            engine.focus_active_surface();
+                        }
+                    };
+                });
+            }
+        };
+        let finish = Rc::new(finish);
+        entry.connect_activate({
+            let finish = finish.clone();
+            move |e| finish(e, true)
+        });
+        // The Entry hands focus to its inner GtkText, so watch focus leaving the
+        // whole entry rather than the Entry's own has-focus.
+        let focus = gtk4::EventControllerFocus::new();
+        focus.connect_leave({
+            let finish = finish.clone();
+            let entry = entry.clone();
+            move |_| finish(&entry, true)
+        });
+        entry.add_controller(focus);
+        let keys = gtk4::EventControllerKey::new();
+        keys.connect_key_pressed({
+            let entry = entry.clone();
+            move |_, key, _, _| {
+                if key == gtk4::gdk::Key::Escape {
+                    finish(&entry, false);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            }
+        });
+        entry.add_controller(keys);
     }
 }
 
@@ -406,77 +510,18 @@ fn show_tab_menu(item: &gtk4::Box, ptr: usize) {
     popover.popup();
 }
 
-/// "Rename tab" dialog for tab `uuid`, prefilled with its current label.
-/// An empty name restores the automatic title (the terminal's OSC title).
-fn prompt_rename(state: &crate::app_state::AppStateRef, uuid: Uuid, current: &str) {
-    let parent = state.try_borrow().ok().and_then(|s| s.gtk_app.active_window());
-    let dialog = gtk4::Window::builder()
-        .title("Rename Tab")
-        .modal(true)
-        .resizable(false)
-        .default_width(320)
-        .build();
-    dialog.add_css_class("cmux-dialog");
-    if let Some(parent) = &parent {
-        dialog.set_transient_for(Some(parent));
+/// Start renaming terminal `tab_id` of workspace `ws_idx` in its tab bar
+/// (creating the bar for a single-tab pane).
+fn begin_rename(state: &crate::app_state::AppStateRef, ws_idx: usize, tab_id: u64) {
+    let target = {
+        let Ok(mut s) = state.try_borrow_mut() else { return };
+        let identity = tab_identity(&s, ws_idx, tab_id);
+        let bar = s.split_engines.get_mut(ws_idx).and_then(|e| e.tab_bar_for(tab_id));
+        identity.zip(bar)
+    };
+    if let Some(((uuid, title), (ui, gl_ptr))) = target {
+        ui.start_inline_rename(state, gl_ptr, uuid, &title);
     }
-    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    body.add_css_class("cmux-dialog-body");
-    let hint = gtk4::Label::new(Some("Leave empty to use the terminal's own title."));
-    hint.add_css_class("cmux-dialog-hint");
-    hint.set_xalign(0.0);
-    hint.set_wrap(true);
-    let entry = gtk4::Entry::new();
-    entry.set_text(current);
-    entry.set_placeholder_text(Some("Tab name"));
-    entry.set_max_length(MAX_TITLE_CHARS as i32);
-    entry.set_activates_default(true);
-    let buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    buttons.set_halign(gtk4::Align::End);
-    let cancel = gtk4::Button::with_label("Cancel");
-    cancel.add_css_class("cmux-button");
-    let rename = gtk4::Button::with_label("Rename");
-    rename.add_css_class("cmux-button");
-    rename.add_css_class("suggested");
-    buttons.append(&cancel);
-    buttons.append(&rename);
-    body.append(&entry);
-    body.append(&hint);
-    body.append(&buttons);
-    dialog.set_child(Some(&body));
-    dialog.set_default_widget(Some(&rename));
-
-    cancel.connect_clicked({
-        let dialog = dialog.clone();
-        move |_| dialog.close()
-    });
-    rename.connect_clicked({
-        let dialog = dialog.clone();
-        let entry = entry.clone();
-        let state = Rc::downgrade(state);
-        move |_| {
-            if let Some(state) = state.upgrade() {
-                apply_rename(&state, uuid, &entry.text());
-            }
-            dialog.close();
-        }
-    });
-    let keys = gtk4::EventControllerKey::new();
-    keys.connect_key_pressed({
-        let dialog = dialog.clone();
-        move |_, key, _, _| {
-            if key == gtk4::gdk::Key::Escape {
-                dialog.close();
-                glib::Propagation::Stop
-            } else {
-                glib::Propagation::Proceed
-            }
-        }
-    });
-    dialog.add_controller(keys);
-    dialog.present();
-    entry.grab_focus();
-    entry.select_region(0, -1);
 }
 
 /// Store a tab's name, relabel the bars and save the session. Returns the
@@ -504,13 +549,12 @@ fn tab_identity(s: &crate::app_state::AppState, ws_idx: usize, tab_id: u64) -> O
 
 /// Rename the focused tab (Ctrl+Alt+R): works on single-tab panes too.
 pub fn handle_rename_tab(state: &crate::app_state::AppStateRef) {
-    let target = {
-        let Ok(s) = state.try_borrow() else { return };
-        let Some(engine) = s.active_split_engine() else { return };
-        tab_identity(&s, s.active_index, engine.active_pane_id)
-    };
-    if let Some((uuid, title)) = target {
-        prompt_rename(state, uuid, &title);
+    let target = state
+        .try_borrow()
+        .ok()
+        .and_then(|s| Some((s.active_index, s.active_split_engine()?.active_pane_id)));
+    if let Some((ws_idx, tab_id)) = target {
+        begin_rename(state, ws_idx, tab_id);
     }
 }
 
@@ -571,13 +615,10 @@ fn handle_request(req: TabRequest) {
         return;
     };
     let app = s.gtk_app.clone();
-    let identity = tab_identity(&s, ws_idx, tab_id);
     drop(s);
     match req {
         TabRequest::Rename(_) => {
-            if let Some((uuid, title)) = identity {
-                prompt_rename(&state, uuid, &title);
-            }
+            begin_rename(&state, ws_idx, tab_id);
             return;
         }
         TabRequest::Select(_) => {

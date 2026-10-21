@@ -561,50 +561,68 @@ impl AppState {
         if let Some(ref notify) = self.save_notify {
             // Snapshot session data on main thread where Rc<RefCell<AppState>> is safe.
             if let Some(ref tx) = self.session_tx {
-                let session = crate::session::SessionData {
-                    version: 2, // D-01: bump to version 2 for full tree serialization
-                    active_index: self.active_index,
-                    workspaces: self.workspaces.iter().enumerate().map(|(i, ws)| {
-                        // D-02: save full split tree for ALL workspaces
-                        let layout = if i < self.split_engines.len() {
-                            self.split_engines[i].root.to_data()
-                        } else {
-                            // Fallback: shouldn't happen, but be safe
-                            crate::split_engine::SplitNodeData::Leaf {
-                                pane_id: 0,
-                                surface_uuid: uuid::Uuid::nil(),
-                                shell: String::new(),
-                                cwd: String::new(),
-                                tabs: Vec::new(), // tabs
-                                active_tab: 0,
-                            }
-                        };
-                        // D-04: save active_pane_uuid per workspace
-                        let active_pane_uuid = if i < self.split_engines.len() {
-                            self.split_engines[i].active_pane_uuid()
-                        } else {
-                            None
-                        };
-                        crate::session::WorkspaceSession {
-                            uuid: ws.uuid.to_string(),
-                            name: ws.name.clone(),
-                            active_pane_uuid,
-                            layout,
-                        }
-                    }).collect(),
-                    tab_titles: {
-                        // tabs: only names of tabs that still exist.
-                        let live: std::collections::HashSet<uuid::Uuid> = self
-                            .split_engines
-                            .iter()
-                            .flat_map(|e| e.all_surfaces().into_iter().map(|s| s.uuid))
-                            .collect();
-                        crate::tabs::custom_titles_for_session(|u| live.contains(u))
-                    },
-                };
-                let _ = tx.send(session);
+                let _ = tx.send(self.session_snapshot());
             }
             notify.notify_one();
+        }
+    }
+
+    /// Write the session to disk right away (window close / app shutdown), bypassing
+    /// the debounce task, which may not get to run once the app is exiting.
+    pub fn save_session_now(&self) {
+        if let Err(e) = crate::session::save_session_atomic(&self.session_snapshot()) {
+            eprintln!("cmux: session save on exit failed: {e}");
+        }
+    }
+
+    /// Working directory of every terminal (all tabs of all panes), for detecting
+    /// `cd`s that should be persisted (they don't otherwise trigger a save).
+    pub fn terminal_cwds(&self) -> Vec<(uuid::Uuid, String)> {
+        self.split_engines.iter().flat_map(|e| e.terminal_cwds()).collect()
+    }
+
+    /// Current state as SessionData (workspaces, split trees with each terminal's cwd).
+    pub fn session_snapshot(&self) -> crate::session::SessionData {
+        crate::session::SessionData {
+            version: 2, // D-01: bump to version 2 for full tree serialization
+            active_index: self.active_index,
+            workspaces: self.workspaces.iter().enumerate().map(|(i, ws)| {
+                // D-02: save full split tree for ALL workspaces
+                let layout = if i < self.split_engines.len() {
+                    self.split_engines[i].root.to_data()
+                } else {
+                    // Fallback: shouldn't happen, but be safe
+                    crate::split_engine::SplitNodeData::Leaf {
+                        pane_id: 0,
+                        surface_uuid: uuid::Uuid::nil(),
+                        shell: String::new(),
+                        cwd: String::new(),
+                        tabs: Vec::new(), // tabs
+                        active_tab: 0,
+                    }
+                };
+                // D-04: save active_pane_uuid per workspace
+                let active_pane_uuid = if i < self.split_engines.len() {
+                    self.split_engines[i].active_pane_uuid()
+                } else {
+                    None
+                };
+                crate::session::WorkspaceSession {
+                    uuid: ws.uuid.to_string(),
+                    name: ws.name.clone(),
+                    active_pane_uuid,
+                    layout,
+                }
+            }).collect(),
+            tab_titles: {
+                // tabs: only names of tabs that still exist.
+                let live: std::collections::HashSet<uuid::Uuid> = self
+                    .split_engines
+                    .iter()
+                    .flat_map(|e| e.all_surfaces().into_iter().map(|s| s.uuid))
+                    .collect();
+                crate::tabs::custom_titles_for_session(|u| live.contains(u))
+            },
         }
     }
 

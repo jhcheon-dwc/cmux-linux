@@ -207,6 +207,9 @@ pub fn create_surface(
     gl_area.set_auto_render(false);
     // Must be focusable to receive keyboard events via EventControllerKey.
     gl_area.set_focusable(true);
+    // Every terminal reserves the focus border (transparent until focused), so
+    // moving focus recolors it instead of resizing the terminals.
+    gl_area.add_css_class("cmux-pane");
     // Grab keyboard focus when the user clicks inside the terminal.
     gl_area.set_focus_on_click(true);
     // Expand to fill available space — required for GtkPaned to distribute space evenly.

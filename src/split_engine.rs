@@ -486,10 +486,9 @@ impl SplitEngine {
                     // Create surface — realize callback will create Ghostty surface and wire registries
                     let ids = crate::ghostty::surface::PaneIds { workspace: workspace_uuid, surface: uuid };
                     let mut config = local_pane_config(None, ffi::ghostty_surface_context_e_GHOSTTY_SURFACE_CONTEXT_WINDOW);
-                    // tabs: a pane saved with a tab list starts each tab in its saved
-                    // working directory, if it still exists (single-tab panes keep
-                    // the old behavior).
-                    if !saved_tabs.is_empty() && !tab.cwd.is_empty() && std::path::Path::new(&tab.cwd).is_dir() {
+                    // Every restored terminal starts in its saved working directory,
+                    // if it still exists (else the default directory).
+                    if !tab.cwd.is_empty() && std::path::Path::new(&tab.cwd).is_dir() {
                         config.working_directory = leak_c_string(&tab.cwd);
                     }
                     let (gl_area, _surface_cell) =
@@ -1715,64 +1714,16 @@ fn is_zero(n: &usize) -> bool {
     *n == 0
 }
 
-/// Best-effort CWD capture for a Ghostty surface via /proc.
-/// Walks /proc looking for child processes of the current process (cmux),
-/// then reads /proc/{pid}/cwd for the foreground shell.
-/// Never panics — falls back to $HOME or empty string.
-fn get_surface_cwd(surface: ffi::ghostty_surface_t) -> String {
-    if surface.is_null() {
-        return String::new();
-    }
-    // Try to find child shell processes by scanning /proc for children of our PID.
-    // Each Ghostty surface spawns a child shell — we look for processes whose
-    // parent is the cmux process and read their CWD.
-    let our_pid = std::process::id();
-    if let Ok(entries) = std::fs::read_dir("/proc") {
-        // Collect candidate child PIDs (children of our process)
-        let mut candidates: Vec<u32> = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if let Ok(pid) = name.to_string_lossy().parse::<u32>() {
-                // Read /proc/{pid}/stat to check parent PID
-                if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                    // Format: pid (comm) state ppid ...
-                    // Find the closing paren then parse ppid
-                    if let Some(after_comm) = stat.rfind(')') {
-                        let fields: Vec<&str> = stat[after_comm + 2..].split_whitespace().collect();
-                        if fields.len() >= 2 {
-                            if let Ok(ppid) = fields[1].parse::<u32>() {
-                                if ppid == our_pid {
-                                    candidates.push(pid);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Use the last (most recent) child process CWD as best guess.
-        // In practice, each surface has one direct child shell.
-        for pid in candidates.iter().rev() {
-            if let Ok(cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
-                let cwd_str = cwd.to_string_lossy().to_string();
-                if !cwd_str.is_empty() {
-                    return cwd_str;
-                }
-            }
-        }
-    }
-    // Fallback to $HOME
-    std::env::var("HOME").unwrap_or_default()
-}
-
 impl SplitNode {
     /// Produce a serializable snapshot of this node's tree structure.
     /// `shell` and `cwd` are best-effort: Plan 05 fills these via /proc.
     /// Falls back to empty strings if /proc is unavailable or the pid is unknown.
     pub fn to_data(&self) -> SplitNodeData {
         match self {
-            SplitNode::Leaf { pane_id, uuid, surface, tabs, .. } => {
-                let cwd = get_surface_cwd(*surface);
+            SplitNode::Leaf { pane_id, uuid, tabs, .. } => {
+                // The cwd of this pane's own shell (found by its CMUX_SURFACE_ID),
+                // not just any child of cmux: every pane used to save the same path.
+                let cwd = tab_cwd(*uuid);
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
                 // tabs: list every tab when there is more than one.
                 let tab_list = if tabs.others.is_empty() {
@@ -2312,6 +2263,17 @@ fn free_tab(entry: crate::tabs::TabEntry, ui: Option<&crate::tabs::PaneTabsUi>) 
 }
 
 /// Working directory of a tab's shell, for the session (empty if unknown).
+impl SplitEngine {
+    /// Working directory of every terminal in this workspace (all tabs of all panes).
+    pub fn terminal_cwds(&self) -> Vec<(Uuid, String)> {
+        self.all_surfaces()
+            .into_iter()
+            .filter(|s| s.gl_area.is_some())
+            .map(|s| (s.uuid, tab_cwd(s.uuid)))
+            .collect()
+    }
+}
+
 fn tab_cwd(uuid: Uuid) -> String {
     shell_cwd_for_pane(&uuid.to_string()).unwrap_or_default()
 }
@@ -2457,6 +2419,23 @@ impl SplitEngine {
 
     pub fn refresh_tab_bars(&self) {
         refresh_tab_bars_in(&self.root);
+    }
+
+    /// The tab bar of the pane holding terminal `tab_id` (created if the pane is
+    /// still a bare GLArea) and that terminal's GLArea pointer, for editing its
+    /// tab in place. None for a preview pane or an unknown id.
+    pub fn tab_bar_for(&mut self, tab_id: u64) -> Option<(crate::tabs::PaneTabsUi, usize)> {
+        let (leaf_id, _, _) = self.tab_location(tab_id)?;
+        let leaf = leaf_mut(&mut self.root, leaf_id)?;
+        let SplitNode::Leaf { pane_id, gl_area, tabs, .. } = leaf else { return None };
+        let gl_ptr = if *pane_id == tab_id {
+            gl_area.as_ptr() as usize
+        } else {
+            tabs.others.iter().find(|t| t.pane_id == tab_id)?.gl_area.as_ptr() as usize
+        };
+        let ui = ensure_tabs_ui(gl_area, tabs);
+        leaf.refresh_tab_bar();
+        Some((ui, gl_ptr))
     }
 
     /// Open a new tab right of the active tab of the active pane, in that
