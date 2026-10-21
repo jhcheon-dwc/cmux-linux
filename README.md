@@ -31,6 +31,28 @@
 | 창 닫기 시 크래시 | 터미널을 해제한 뒤 포커스 해제 이벤트가 해제된 터미널에 접근 | `9e8436de` |
 | 가운데 창이 멈춘 채 남음 | 중첩 분할을 접을 때 위젯을 기존 부모에서 떼지 않아 GTK가 교체를 거부 | `2cf95066` |
 
+### macOS cmux v0.65 기능 가져오기
+
+원본 Linux 포팅은 macOS cmux 0.62.2(2026년 3월) 무렵에서 갈라졌습니다. macOS cmux는 그 뒤 v0.65.2까지 기능이 많이 늘었는데, 그중 Linux에서 의미 있는 것을 가져왔습니다(포크 PR [#1](https://github.com/jhcheon-dwc/cmux-linux/pull/1)~[#6](https://github.com/jhcheon-dwc/cmux-linux/pull/6)).
+
+| 기능 | 내용 | 자세히 |
+|---|---|---|
+| 창마다 가로 탭 | 새 탭, 전환, 닫기, 드래그로 순서 변경, 세션 복원 | [탭](#탭) |
+| Claude Code 상태 표시 | 사이드바에 실행 중 / 입력 필요 / 대기 / 오류, 진행률(OSC 9;4), 읽음 표시 | [Claude Code 상태 표시](#claude-code-상태-표시) |
+| 알림 | 사이드바 점, 보고 있는 창이면 생략, 사용자 훅, `cmux notify`, 알림 클릭 시 해당 워크스페이스로 이동 | [알림](#알림) |
+| 창 이동 | 번호로 이동, 직전 창으로 돌아가기, 키보드로 분할선 이동, 균등 분할, 작업 디렉터리 상속 | [단축키](#단축키) |
+| 터미널 | 찾기 바(`Ctrl+Shift+F`), 링크 열기(Windows 브라우저), 창 제목 표시 | — |
+| 소켓/CLI | `send-text`/`read-text` 동작, `paste --submit`, 키 조합 전송(`send-key ctrl+c`), `current`, `read-selection`, 이전 워크스페이스 | `cmux --help` |
+
+통합하면서 함께 고친 버그:
+
+- 워크스페이스를 닫아도 그 안의 셸이 계속 살아 있던 문제(터미널이 해제되지 않음)
+- 창을 닫을 때 다른 워크스페이스의 터미널을 해제할 수 있던 문제(`pane_id`가 워크스페이스마다 겹침)
+- 번들된 `ghostty.h`에 `SET_TAB_TITLE`이 빠져 액션 번호가 하나씩 밀려 있던 문제(벨이 전달되지 않음)
+- 환경변수를 바꾸는 테스트들이 병렬로 실행되며 서로 간섭하던 문제
+
+Cloud·계정·iOS 연동, Sparkle 업데이트, 메뉴 막대처럼 macOS나 Cloud 전용인 기능은 가져오지 않았습니다. 명령 팔레트, 전체 검색(세션·스크롤백), 워크스페이스 그룹, 재시작 시 Claude Code 세션 이어가기 등은 아직 없습니다.
+
 원본 저장소에는 IME 지원을 [이슈 #5](https://github.com/bradwilson331/cmux-linux/issues/5)와 [PR #6](https://github.com/bradwilson331/cmux-linux/pull/6)(`feat/ime-support` 브랜치, IME 커밋만)으로 올려 두었습니다.
 
 이 외에 WSLg 환경 설정은 코드가 아니라 [`contrib/wsl/`](contrib/wsl/)의 파일과 설치 스크립트로 맞춥니다.
@@ -192,8 +214,8 @@ equalize_splits = "<Ctrl><Alt>0"
 
 - 탭은 같은 창 안에서만 옮길 수 있습니다(다른 창이나 워크스페이스로 끌어 옮기기는 없음).
 - 기본 단축키 `Ctrl+N`, `Ctrl+B`, `Ctrl+D`, `Ctrl+1`~`9`, `Alt+1`~`9`(셸의 숫자 인자), `Ctrl+Tab`이 터미널 앱의 키와 겹칩니다. `~/.config/cmux/`의 `[shortcuts]`에서 바꿀 수 있습니다.
-- 알림을 클릭해도 cmux 창으로 이동하지 않습니다.
-- 소켓 CLI의 `send-text`/`read-text`는 이 환경에서 동작하지 않았습니다.
+- WSLg에서는 GTK 키·마우스 입력을 자동으로 만들 수 없어서, 새 기능은 소켓 CLI와 단위 테스트로 검증했습니다. 단축키, 탭 클릭·드래그, 찾기 바 입력, 알림 클릭 후 창 앞으로 가져오기는 실제로 눌러서 확인해야 합니다.
+- 한 번도 화면에 표시되지 않은 창(백그라운드 워크스페이스에서 소켓으로 만든 창 등)은 소켓 `close-surface`로 닫히지 않을 수 있습니다.
 - 실행 시 GTK CSS 경고(`max-width` 등)가 나오지만 동작에는 영향이 없습니다.
 
 ---
