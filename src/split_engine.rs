@@ -919,6 +919,7 @@ impl SplitEngine {
         // Capture the raw GLArea pointer BEFORE the tree removal drops the GObject.
         // GL_AREA_REGISTRY holds raw pointers; once GTK finalizes the GObject the
         // pointer becomes dangling. Remove it here while the GLArea is still alive.
+        let closed_gl_area = self.find_gl_area(active_id);
         let raw_gl_area: Option<*mut gtk4::ffi::GtkGLArea> = self
             .find_gl_area(active_id)
             .map(|a| a.as_ptr() as *mut gtk4::ffi::GtkGLArea);
@@ -938,14 +939,6 @@ impl SplitEngine {
             }
         }
 
-        // Deregister from SURFACE_REGISTRY and free the surface.
-        unsafe {
-            ffi::ghostty_surface_free(surface_to_free);
-        }
-        if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
-            registry.remove(&(surface_to_free as usize));
-        }
-
         // Update focus to the surviving pane.
         self.active_pane_id = surviving_id;
         self.root.update_focus_css(surviving_id);
@@ -962,6 +955,21 @@ impl SplitEngine {
             gl_area.grab_focus();
         } else if let Some(entry) = find_url_entry_in_tree(&self.root, surviving_id) {
             entry.grab_focus();
+        }
+
+        // Deregister from SURFACE_REGISTRY and free the surface. This must come
+        // after the focus move above: grab_focus emits focus-leave on the closed
+        // pane's GLArea, whose handler calls ghostty_surface_set_focus on this
+        // surface. Detach it from the GLArea first so any later event on the
+        // closed pane is a no-op instead of a use-after-free.
+        if let Some(area) = &closed_gl_area {
+            crate::ghostty::surface::detach_surface(area);
+        }
+        unsafe {
+            ffi::ghostty_surface_free(surface_to_free);
+        }
+        if let Ok(mut registry) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
+            registry.remove(&(surface_to_free as usize));
         }
 
         Some(surviving_id)

@@ -55,6 +55,27 @@ fn unshifted_codepoint(ctrl: &gtk4::EventControllerKey, keycode: u32) -> u32 {
         .unwrap_or(0)
 }
 
+const SURFACE_CELL_KEY: &str = "cmux-surface-cell";
+
+/// Detach the Ghostty surface from its GLArea before the surface is freed.
+///
+/// Every handler on the GLArea (focus, key, mouse, scroll, IME, render) reads
+/// the surface from this cell. GTK can still deliver events to a closed pane's
+/// GLArea after the surface is gone (e.g. focus-leave while focus moves to the
+/// surviving pane), so the cell must be emptied first or those handlers call
+/// into freed memory.
+pub fn detach_surface(gl_area: &gtk4::GLArea) {
+    use gtk4::prelude::ObjectExt;
+    let cell = unsafe {
+        gl_area
+            .data::<Rc<RefCell<Option<ffi::ghostty_surface_t>>>>(SURFACE_CELL_KEY)
+            .map(|p| p.as_ref().clone())
+    };
+    if let Some(cell) = cell {
+        *cell.borrow_mut() = None;
+    }
+}
+
 /// Send IM-committed text that is not tied to a key event (e.g. a finished
 /// Hangul syllable). Matches Ghostty GTK: clear the preedit, then send the text
 /// as a key press with no physical key so it produces no extra PTY encoding.
@@ -146,6 +167,12 @@ pub fn create_surface(
     // then used in render, resize, input, and scale-factor callbacks.
     // Rc<RefCell<...>> is safe here: all callbacks run on the GLib main thread.
     let surface_cell: Rc<RefCell<Option<ffi::ghostty_surface_t>>> = Rc::new(RefCell::new(None));
+    // Keep the cell reachable from the widget so detach_surface can clear it
+    // before the surface is freed.
+    unsafe {
+        use gtk4::prelude::ObjectExt;
+        gl_area.set_data(SURFACE_CELL_KEY, surface_cell.clone());
+    }
 
     // ── GtkGLArea::realize ───────────────────────────────────────────────────
     // GL context is now valid. Create the surface HERE so ghostty can access
