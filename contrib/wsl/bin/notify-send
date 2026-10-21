@@ -1,0 +1,38 @@
+#!/bin/sh
+# notify-send shim for WSL: shows a Windows toast notification via powershell.exe.
+# WSLg has no org.freedesktop.Notifications server, so the real notify-send
+# would have nowhere to send to. Supports: notify-send [OPTIONS] SUMMARY [BODY]
+# (options such as --app-name/--icon/--expire-time/-u are accepted and ignored).
+
+summary=""
+body=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --) shift; break ;;
+        # Options that take a separate value argument.
+        -a|-i|-t|-u|-c|-h|-e|-A|--app-name|--icon|--expire-time|--urgency|--category|--hint|--action|--replace-id|-r)
+            shift 2 ;;
+        -*) shift ;;
+        *) break ;;
+    esac
+done
+summary="${1:-}"
+body="${2:-}"
+[ -z "$summary" ] && exit 1
+
+PS=$(command -v powershell.exe 2>/dev/null || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
+# Base64 keeps quotes and other special characters from breaking the command.
+t64=$(printf '%s' "$summary" | base64 -w0)
+b64=$(printf '%s' "$body" | base64 -w0)
+
+"$PS" -NoProfile -NonInteractive -Command "
+\$d = { param(\$s) [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\$s)) }
+\$t = [Security.SecurityElement]::Escape((& \$d '$t64'))
+\$b = [Security.SecurityElement]::Escape((& \$d '$b64'))
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > \$null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > \$null
+\$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+\$xml.LoadXml(\"<toast><visual><binding template='ToastGeneric'><text>\$t</text><text>\$b</text></binding></visual></toast>\")
+\$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier(\$app).Show([Windows.UI.Notifications.ToastNotification]::new(\$xml))
+" >/dev/null 2>&1

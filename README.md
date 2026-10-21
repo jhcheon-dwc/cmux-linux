@@ -1,3 +1,95 @@
+# cmux-linux — WSL2 한글 환경용 포크 (jhcheon-dwc)
+
+[bradwilson331/cmux-linux](https://github.com/bradwilson331/cmux-linux)를 Windows의 WSL2(WSLg)에서 한글로 매일 쓸 수 있게 고친 포크입니다. **설치와 사용은 `ime-support` 브랜치 기준입니다.** 원본 README는 [아래](#upstream-readme)에 그대로 있습니다.
+
+## 왜 포크했나
+
+원본 0.1.0을 WSL2에 설치하면 기본적인 터미널 사용부터 막혔습니다.
+
+- 한글 입력이 안 됨 (입력기 연결 코드가 없음)
+- 복사/붙여넣기(`Ctrl+Shift+C`/`V`)가 동작하지 않음
+- cmux 안의 Claude Code에서 `Ctrl+V` 이미지 붙여넣기가 안 됨
+- Claude Code 알림이 오지 않음
+- 창(pane)을 클릭해도 포커스가 옮겨가지 않음, 스크롤 방향이 반대
+- `Ctrl+Shift+X`로 창을 닫으면 앱 전체가 크래시
+- `1 | 2 | 3`에서 가운데 창을 닫으면 그 창이 멈춘 채로 남음
+
+또 원본 `main`은 ghostty 서브모듈이 존재하지 않는 커밋을 가리켜 빌드가 안 됩니다([#1](https://github.com/bradwilson331/cmux-linux/issues/1), [#3](https://github.com/bradwilson331/cmux-linux/issues/3)). 그래서 빌드를 고친 [PR #4](https://github.com/bradwilson331/cmux-linux/pull/4)(peteonrails) 위에서 작업했습니다.
+
+## 원본과 다른 점
+
+`ime-support` 브랜치 = 원본 `main` + PR #4 + 아래 커밋.
+
+| 문제 | 원인 | 커밋 |
+|---|---|---|
+| 한글 등 IME 입력 불가 | 키 입력이 입력기(`GtkIMContext`)를 거치지 않음. Ghostty GTK와 같은 방식으로 preedit/commit 연결 | `6b9f1962` |
+| 복사/붙여넣기 안 됨 | 앱 단축키가 대상 터미널을 잘못 찾음(워크스페이스 간 `pane_id` 중복), 클립보드 콜백 ABI가 Ghostty와 불일치 | `21a33345` |
+| `Ctrl+글자`가 앱에 안 감 (Claude Code `Ctrl+V` 이미지 등) | 키 이벤트의 `unshifted_codepoint`를 0으로 보내서 kitty 키보드 프로토콜 인코딩 실패 | `37510a52` |
+| 알림이 안 옴 | OSC 9/777 알림(Claude Code가 사용)을 무시함. `notify-send`로 전달하도록 추가 | `c36e923e` |
+| 클릭으로 포커스 이동 불가 | 클릭 시 활성 창이 바뀌지 않아 포커스가 이전 창으로 되돌아감 | `af59e492` |
+| 스크롤 방향 반대 | Ghostty GTK와 달리 스크롤 값 부호를 뒤집지 않음 | `093e78e0` |
+| 창 닫기 시 크래시 | 터미널을 해제한 뒤 포커스 해제 이벤트가 해제된 터미널에 접근 | `9e8436de` |
+| 가운데 창이 멈춘 채 남음 | 중첩 분할을 접을 때 위젯을 기존 부모에서 떼지 않아 GTK가 교체를 거부 | `2cf95066` |
+
+원본 저장소에는 IME 지원을 [이슈 #5](https://github.com/bradwilson331/cmux-linux/issues/5)와 [PR #6](https://github.com/bradwilson331/cmux-linux/pull/6)(`feat/ime-support` 브랜치, IME 커밋만)으로 올려 두었습니다.
+
+이 외에 WSLg 환경 설정은 코드가 아니라 [`contrib/wsl/`](contrib/wsl/)의 파일과 설치 스크립트로 맞춥니다.
+
+## 설치 (WSL2)
+
+확인한 환경: Windows 11 + WSL2 Ubuntu 26.04 (WSLg), sudo 사용 가능.
+
+```bash
+git clone -b ime-support https://github.com/jhcheon-dwc/cmux-linux.git ~/projects/cmux-linux
+cd ~/projects/cmux-linux
+contrib/wsl/setup.sh
+```
+
+처음 빌드는 Zig 다운로드와 libghostty 빌드 때문에 몇 분 걸립니다. 끝나면 새 터미널을 열고 `cmux-app`을 실행하거나 Windows 시작 메뉴에서 cmux를 엽니다.
+
+`setup.sh`가 하는 일 (여러 번 실행해도 됩니다):
+
+1. 패키지 설치: Rust, GTK4 개발 패키지, Go, `ibus`/`ibus-hangul`, 한글·심볼·이모지 폰트, `wl-clipboard` 등
+2. 빌드: 서브모듈 → `scripts/setup-linux.sh`(Zig 0.15.2 + libghostty) → `cargo build` → `cmuxd-remote`(Go) → `.deb` 생성 후 `dpkg -i`
+3. 사용자 설정 설치 (아래 표)
+4. 시작 메뉴 항목이 실행 래퍼를 쓰도록 수정
+5. Windows: AutoHotkey v2 설치(winget), 한/영키 스크립트를 시작프로그램에 등록하고 실행
+
+옵션: `--skip-build`(설정만 다시 적용), `--no-windows`(Windows 쪽 작업 생략)
+
+### 설치되는 파일
+
+| 위치 | 원본 | 역할 |
+|---|---|---|
+| `~/.local/bin/cmux-app` | `contrib/wsl/bin/cmux-app` | 실행 래퍼. 한글 입력 환경변수, `GALLIUM_DRIVER=d3d12`(WSLg 기본 GL이 실패함), ibus 데몬과 한글 엔진 준비 |
+| `~/.local/bin/notify-send` | `contrib/wsl/bin/notify-send` | WSLg엔 알림 서버가 없어서 `powershell.exe`로 Windows 토스트를 띄움 |
+| `~/.config/cmux-wsl/ime.sh` | `contrib/wsl/shell/ime.sh` | `~/.zshrc`/`~/.bashrc`에서 불러옴. ibus 환경변수, 데몬 시작, 한글 엔진 지정 |
+| `~/.config/gtk-{3,4}.0/settings.ini` | `contrib/wsl/config/gtk/settings.ini` | GTK 다크 테마 (없을 때만 설치) |
+| `~/.config/ghostty/config.ghostty` | `contrib/wsl/config/ghostty/config.ghostty` | 폰트(D2Coding) 등. cmux와 Ghostty가 같이 씀 (없을 때만 설치) |
+| `%USERPROFILE%\hangul-wslg.ahk` | `contrib/wsl/windows/hangul-wslg.ahk` | WSLg 창(`msrdc.exe`)에서만 한/영키를 `Shift+Space`로 바꿈. WSLg가 한/영키를 전달하지 않기 때문 |
+
+## 사용 시 주의
+
+- **cmux는 래퍼로 실행하세요.** 터미널의 `cmux-app` 또는 시작 메뉴로 실행하면 됩니다. `/usr/bin/cmux-app`을 직접 실행하면 한글 입력이 안 됩니다.
+- **한/영 전환은 `Shift+Space` 또는 한/영키입니다.** 한글 엔진(`ibus engine` → `hangul`) 안에서만 동작합니다. 안 되면 `ibus engine hangul`을 실행하세요.
+- **`.deb`를 다시 설치하면 시작 메뉴 항목이 원래대로 돌아갑니다.** `contrib/wsl/setup.sh --skip-build`로 다시 맞추세요.
+- **Claude Code 세션 안에서 cmux를 띄우지 마세요.** Claude 환경변수(`CLAUDE_CODE_CHILD_SESSION` 등)를 물려받아, cmux 안의 Claude Code가 대화 기록을 저장하지 않습니다.
+- **Windows 알림의 발신자는 "Windows PowerShell"로 표시됩니다.** 알림이 안 보이면 Windows 알림 설정에서 PowerShell을 허용하세요.
+- **PowerToys로 한/영키를 리매핑하지 마세요.** 앱 단위 지정이 안 돼서 Windows 전체의 한/영 전환이 막힙니다. AutoHotkey 스크립트를 쓰세요.
+- 패키지 버전은 원본과 같은 `0.1.0`이라 `dpkg` 정보로는 원본과 구분되지 않습니다.
+
+## 알려진 제한
+
+- 가로 탭이 없습니다. 왼쪽 사이드바의 워크스페이스가 탭 역할을 합니다(`Ctrl+N` 새로 만들기, `Ctrl+1`~`9` 이동).
+- 기본 단축키 `Ctrl+N`, `Ctrl+B`, `Ctrl+D`, `Ctrl+1`~`9`가 터미널 앱의 키와 겹칩니다. `~/.config/cmux/`의 `[shortcuts]`에서 바꿀 수 있습니다.
+- 알림을 클릭해도 cmux 창으로 이동하지 않습니다.
+- 소켓 CLI의 `send-text`/`read-text`는 이 환경에서 동작하지 않았습니다.
+- 실행 시 GTK CSS 경고(`max-width` 등)가 나오지만 동작에는 영향이 없습니다.
+
+---
+
+<a id="upstream-readme"></a>
+
 <h1 align="center">cmux for Linux</h1>
 <p align="center">A GPU-accelerated terminal multiplexer with tabs, splits, workspaces, browser automation, and socket CLI control — powered by Ghostty</p>
 
