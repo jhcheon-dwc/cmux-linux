@@ -264,6 +264,8 @@ pub fn handle_socket_command(
                 "browser.network.list", "browser.network.clear", "browser.devtools.url",
                 "browser.highlight",
                 "browser.state.save", "browser.state.load",
+                // app-site
+                "browser.manifest", "browser.storage_usage", "browser.clear_site_data",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
