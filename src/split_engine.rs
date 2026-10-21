@@ -148,6 +148,18 @@ impl SplitNode {
     }
 
     /// Collect all surfaces into a Vec (for ghostty_surface_free on workspace close).
+    /// Collect every terminal GLArea in this subtree (Preview panes have none).
+    pub fn collect_gl_areas(&self, out: &mut Vec<gtk4::GLArea>) {
+        match self {
+            SplitNode::Leaf { gl_area, .. } => out.push(gl_area.clone()),
+            SplitNode::Preview { .. } => {}
+            SplitNode::Split { start, end, .. } => {
+                start.collect_gl_areas(out);
+                end.collect_gl_areas(out);
+            }
+        }
+    }
+
     pub fn collect_surfaces(&self, out: &mut Vec<ffi::ghostty_surface_t>) {
         match self {
             SplitNode::Leaf { surface, .. } => out.push(*surface),

@@ -314,18 +314,38 @@ impl AppState {
             }
         }
 
-        // Before removing from workspaces, free all Ghostty surfaces in the split engine.
+        // Resolve this workspace's Ghostty surfaces before tearing anything down.
+        // Leaf `surface` pointers are often null (only filled after a session
+        // restore), so look surfaces up through GL_TO_SURFACE by GLArea; otherwise
+        // they were never freed and their shells kept running.
+        //
+        // Order matters, as in SplitEngine::close_active: detach each surface from
+        // its GLArea and drop the GLArea from the registries first, so the events
+        // GTK delivers while the widgets are removed (unrealize, focus-leave) are
+        // no-ops, and only free the surfaces after the widgets are gone.
+        let mut surfaces_to_free: Vec<crate::ghostty::ffi::ghostty_surface_t> = Vec::new();
         if let Some(engine) = self.split_engines.get(index) {
-            let mut surfaces = Vec::new();
-            engine.root.collect_surfaces(&mut surfaces);
-            for surface in surfaces {
-                if !surface.is_null() {
-                    unsafe {
-                        crate::ghostty::ffi::ghostty_surface_free(surface);
-                    }
-                    if let Ok(mut reg) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
-                        reg.remove(&(surface as usize));
-                    }
+            let mut areas = Vec::new();
+            engine.root.collect_gl_areas(&mut areas);
+            let mut leaf_surfaces = Vec::new();
+            engine.root.collect_surfaces(&mut leaf_surfaces);
+            for area in &areas {
+                let ptr = area.as_ptr() as usize;
+                let surface = crate::ghostty::callbacks::GL_TO_SURFACE
+                    .lock()
+                    .ok()
+                    .and_then(|mut m| m.remove(&ptr));
+                if let Ok(mut gl_areas) = crate::ghostty::callbacks::GL_AREA_REGISTRY.lock() {
+                    gl_areas.retain(|p| p.0 as usize != ptr);
+                }
+                crate::ghostty::surface::detach_surface(area);
+                if let Some(s) = surface {
+                    surfaces_to_free.push(s as crate::ghostty::ffi::ghostty_surface_t);
+                }
+            }
+            for s in leaf_surfaces {
+                if !s.is_null() && !surfaces_to_free.contains(&s) {
+                    surfaces_to_free.push(s);
                 }
             }
         }
@@ -341,6 +361,16 @@ impl AppState {
         // Remove GtkStack page.
         if let Some(child) = self.stack.child_by_name(&workspace.stack_page_name) {
             self.stack.remove(&child);
+        }
+
+        // Widgets are gone and detached; now free the surfaces (ends their shells).
+        for surface in surfaces_to_free {
+            unsafe {
+                crate::ghostty::ffi::ghostty_surface_free(surface);
+            }
+            if let Ok(mut reg) = crate::ghostty::callbacks::SURFACE_REGISTRY.lock() {
+                reg.remove(&(surface as usize));
+            }
         }
 
         // Adjust active_index: if we removed before or at active, clamp.
