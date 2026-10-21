@@ -14,6 +14,7 @@ mod session;
 mod ssh;
 mod config;
 mod browser;
+mod browser_devtools; // browser-devtools
 mod menus;
 mod header_bar;
 mod ssh_hosts;

@@ -511,6 +511,36 @@ pub enum BrowserCommand {
         /// Surface reference (surface:N or UUID)
         surface: String,
     },
+    /// Console messages captured from the page (log/info/warn/error)
+    Console {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Clear the captured messages instead of listing them
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Uncaught JavaScript errors with source location
+    Errors {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Clear the captured errors instead of listing them
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Network requests (method, URL, status, type, size, time)
+    Network {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+        /// Clear the captured requests instead of listing them
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Print a URL that opens Chrome DevTools for the current page
+    #[command(name = "devtools-url")]
+    DevtoolsUrl {
+        /// Surface reference (surface:N or UUID); optional
+        surface: Option<String>,
+    },
     /// Enable browser streaming
     #[command(name = "stream-enable")]
     StreamEnable,
@@ -690,6 +720,22 @@ fn browser_command_to_rpc(cmd: &BrowserCommand) -> (&'static str, serde_json::Va
         }
         BrowserCommand::Screenshot { surface } => {
             ("browser.screenshot", json!({"surface_ref": surface}))
+        }
+        // browser-devtools
+        BrowserCommand::Console { surface, clear } => (
+            if *clear { "browser.console.clear" } else { "browser.console.list" },
+            json!({"surface_ref": surface}),
+        ),
+        BrowserCommand::Errors { surface, clear } => (
+            if *clear { "browser.errors.clear" } else { "browser.errors.list" },
+            json!({"surface_ref": surface}),
+        ),
+        BrowserCommand::Network { surface, clear } => (
+            if *clear { "browser.network.clear" } else { "browser.network.list" },
+            json!({"surface_ref": surface}),
+        ),
+        BrowserCommand::DevtoolsUrl { surface } => {
+            ("browser.devtools.url", json!({"surface_ref": surface}))
         }
         BrowserCommand::StreamEnable => ("browser.stream.enable", json!({})),
         BrowserCommand::StreamDisable => ("browser.stream.disable", json!({})),

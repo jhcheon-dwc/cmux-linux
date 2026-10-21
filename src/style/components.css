@@ -188,8 +188,43 @@ button.browser-nav-btn:disabled { opacity: 0.4; }
 .browser-nav-devtools:checked { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
 .browser-nav-zoom { margin-left: var(--space-xxs); }
 .browser-nav-zoom.zoomed { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
-.devtools-overlay { background-color: alpha(var(--color-surface-sunken), 0.92); }
-.devtools-snapshot { color: var(--color-text-primary); font-family: monospace; font-size: var(--font-size-body-sm); padding: var(--space-xl); }
+/* browser-devtools: Console / Network / Elements panel under the page */
+.browser-nav-devtools.devtools-has-errors { color: var(--color-tertiary); }
+.devtools-badge { background-color: var(--color-tertiary); color: var(--color-surface-sunken); border-radius: var(--rounded-full); font-size: var(--font-size-caption); font-weight: 700; padding: 0 var(--space-xs); min-width: 10px; }
+.devtools-panel { background-color: var(--color-surface-sunken); border-top: 1px solid var(--color-line); }
+.devtools-toolbar { background-color: var(--color-surface-chrome); padding: var(--space-xxs) var(--space-md); border-bottom: 1px solid var(--color-line); }
+button.devtools-tab, button.devtools-tool-btn {
+  min-height: 22px; padding: 0 var(--space-md); margin: 0; background: none; box-shadow: none; border: none;
+  border-radius: var(--rounded-sm); color: var(--color-text-secondary); font-size: var(--font-size-body-sm);
+}
+button.devtools-tab:hover, button.devtools-tool-btn:hover { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+button.devtools-tab:checked { color: var(--color-text-primary); box-shadow: inset 0 -2px var(--color-focus); border-radius: 0; }
+.devtools-status { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.devtools-status-error { color: var(--color-tertiary); }
+list.devtools-list { background-color: var(--color-surface-sunken); }
+list.devtools-list > row { padding: 0; min-height: 0; background: none; }
+.devtools-row { padding: var(--space-xxs) var(--space-md); border-bottom: 1px solid var(--color-line); }
+.devtools-mono, .devtools-tag, .devtools-loc, textview.devtools-elements, entry.devtools-eval { font-family: monospace; font-size: var(--font-size-body-sm); }
+.devtools-mono { color: var(--color-text-primary); }
+.devtools-tag { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.devtools-loc { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.devtools-row-error { background-color: alpha(var(--color-tertiary), 0.10); }
+.devtools-row-error .devtools-mono, .devtools-row-error .devtools-tag { color: var(--color-tertiary); }
+.devtools-row-warn { background-color: alpha(var(--color-primary), 0.10); }
+.devtools-row-warn .devtools-mono, .devtools-row-warn .devtools-tag { color: var(--color-primary); }
+.devtools-row-info .devtools-tag { color: var(--color-secondary); }
+.devtools-row-debug .devtools-mono { color: var(--color-text-secondary); }
+.devtools-row-input .devtools-mono, .devtools-row-input .devtools-tag { color: var(--color-text-secondary); }
+.devtools-row-result .devtools-tag { color: var(--color-success); }
+entry.devtools-eval { background-color: var(--color-neutral); color: var(--color-text-primary); border: none; border-top: 1px solid var(--color-line); border-radius: 0; box-shadow: none; min-height: 26px; }
+entry.devtools-eval:focus-within { box-shadow: inset 2px 0 var(--color-focus); }
+.devtools-net-row { padding: var(--space-xxs) var(--space-md); border-bottom: 1px solid var(--color-line); }
+.devtools-net-header { background-color: var(--color-surface-chrome); }
+.devtools-net-header .devtools-mono { color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+row.devtools-net-failed { background-color: alpha(var(--color-tertiary), 0.10); }
+row.devtools-net-failed .devtools-mono { color: var(--color-tertiary); }
+textview.devtools-elements, textview.devtools-elements > text { background-color: var(--color-surface-sunken); color: var(--color-text-primary); }
+textview.devtools-elements { padding: var(--space-md); }
 
 /* ── Inline tab rename (text-input in the tab) ────────────────────────────── */
 entry.cmux-tab-rename { background-color: var(--color-neutral); color: var(--color-text-primary); border: 1px solid var(--color-focus); border-radius: var(--rounded-sm); box-shadow: none; min-height: 22px; padding: 0 var(--space-sm); font-size: var(--font-size-body-sm); }
