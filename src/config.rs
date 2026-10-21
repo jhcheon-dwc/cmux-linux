@@ -60,6 +60,8 @@ pub struct ShortcutConfig {
     pub resize_up: Option<String>,
     pub resize_down: Option<String>,
     pub equalize_splits: Option<String>,
+    // pane-zoom
+    pub toggle_pane_zoom: Option<String>,
     // tabs
     pub new_tab: Option<String>,
     pub next_tab: Option<String>,
@@ -161,6 +163,8 @@ pub enum ShortcutAction {
     ResizeUp,
     ResizeDown,
     EqualizeSplits,
+    // pane-zoom
+    TogglePaneZoom,
     // tabs
     NewTab,
     NextTab,
@@ -207,6 +211,8 @@ const KNOWN_SHORTCUTS: &[&str] = &[
     "focus_pane_6", "focus_pane_7", "focus_pane_8", "focus_pane_9",
     "focus_last_pane", "resize_left", "resize_right", "resize_up", "resize_down",
     "equalize_splits",
+    // pane-zoom
+    "toggle_pane_zoom",
     // tabs
     "new_tab", "next_tab", "prev_tab", "next_tab_alt", "prev_tab_alt",
     "goto_tab_1", "goto_tab_2", "goto_tab_3", "goto_tab_4", "goto_tab_5",
@@ -328,6 +334,8 @@ impl ShortcutMap {
             (ShortcutAction::ResizeUp,        &config.resize_up,        "<Ctrl><Alt><Shift>Up"),
             (ShortcutAction::ResizeDown,      &config.resize_down,      "<Ctrl><Alt><Shift>Down"),
             (ShortcutAction::EqualizeSplits,  &config.equalize_splits,  "<Ctrl><Alt>equal"),
+            // pane-zoom
+            (ShortcutAction::TogglePaneZoom,  &config.toggle_pane_zoom, "<Ctrl><Shift>Return"),
             // tabs
             (ShortcutAction::NewTab,          &config.new_tab,          "<Ctrl><Shift>t"),
             (ShortcutAction::NextTab,         &config.next_tab,         "<Ctrl>Tab"),
@@ -671,6 +679,23 @@ buttons_right = ["split_right", "toggle_sidebar"]
             assert_eq!(smap.accel(ShortcutAction::SplitRight), Some("<Ctrl>t"));
             assert_eq!(smap.accel(ShortcutAction::FocusLastPane), Some("<Ctrl><Alt>Tab"));
         });
+    }
+
+    // pane-zoom
+    #[test]
+    fn test_shortcut_map_toggle_pane_zoom() {
+        on_gtk_thread("test_shortcut_map_toggle_pane_zoom", || {
+            let cs = ModifierType::CONTROL_MASK | ModifierType::SHIFT_MASK;
+            let smap = ShortcutMap::from_config(&ShortcutConfig::default());
+            assert_eq!(smap.lookup(cs, Key::Return), Some(ShortcutAction::TogglePaneZoom));
+            assert_eq!(smap.accel(ShortcutAction::TogglePaneZoom), Some("<Ctrl><Shift>Return"));
+            let config: Config = toml::from_str("[shortcuts]\ntoggle_pane_zoom = \"<Ctrl><Alt>z\"\n").unwrap();
+            let smap = ShortcutMap::from_config(&config.shortcuts);
+            let ca = ModifierType::CONTROL_MASK | ModifierType::ALT_MASK;
+            assert_eq!(smap.lookup(ca, Key::z), Some(ShortcutAction::TogglePaneZoom));
+            assert_eq!(smap.lookup(cs, Key::Return), None);
+        });
+        assert!(unknown_shortcut_keys("[shortcuts]\ntoggle_pane_zoom = \"<Ctrl><Alt>z\"\n").is_empty());
     }
 
     #[test]

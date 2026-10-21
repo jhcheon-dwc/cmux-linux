@@ -164,6 +164,16 @@ pub fn register_actions(
     });
     window.add_action(&action);
 
+    // pane-zoom: win.toggle-pane-zoom
+    let action = gio::SimpleAction::new("toggle-pane-zoom", None);
+    action.connect_activate({
+        let state = state.clone();
+        move |_, _| {
+            crate::shortcuts::handle_pane_zoom(&state, None);
+        }
+    });
+    window.add_action(&action);
+
     // win.rename-workspace
     let action = gio::SimpleAction::new("rename-workspace", None);
     action.connect_activate({
@@ -327,6 +337,7 @@ pub fn register_accels(app: &gtk4::Application, shortcuts: &crate::config::Short
         ("win.split-right", A::SplitRight),
         ("win.split-down", A::SplitDown),
         ("win.rename-workspace", A::RenameWorkspace),
+        ("win.toggle-pane-zoom", A::TogglePaneZoom), // pane-zoom
     ];
     for (action, shortcut_action) in configurable {
         if let Some(accel) = shortcuts.accel(*shortcut_action) {
@@ -383,6 +394,7 @@ pub fn build_hamburger_menu() -> gio::Menu {
     view_section.append(Some("Toggle Sidebar"), Some("win.toggle-sidebar"));
     view_section.append(Some("Split Right"), Some("win.split-right"));
     view_section.append(Some("Split Down"), Some("win.split-down"));
+    view_section.append(Some("Toggle Pane Zoom"), Some("win.toggle-pane-zoom")); // pane-zoom
     menu.append_section(Some("View"), &view_section);
 
     // Help section (D-12)
@@ -415,6 +427,7 @@ pub fn build_terminal_context_menu() -> gio::Menu {
     let pane_section = gio::Menu::new();
     pane_section.append(Some("Split Right"), Some("win.split-right"));
     pane_section.append(Some("Split Down"), Some("win.split-down"));
+    pane_section.append(Some("Toggle Pane Zoom"), Some("win.toggle-pane-zoom")); // pane-zoom
     pane_section.append(Some("New Tab"), Some("win.new-tab")); // tabs
     pane_section.append(Some("Rename Tab…"), Some("win.rename-tab")); // tabs
     pane_section.append(Some("Close Pane"), Some("win.close-pane"));
@@ -433,6 +446,7 @@ pub fn build_browser_context_menu() -> gio::Menu {
     let menu = gio::Menu::new();
     menu.append(Some("Open in External Browser"), Some("win.open-external-browser"));
     menu.append(Some("Copy URL"), Some("win.copy-url"));
+    menu.append(Some("Toggle Full Pane"), Some("win.toggle-pane-zoom")); // pane-zoom
     menu.append(Some("Close Browser"), Some("win.browser-close"));
     menu
 }
@@ -507,6 +521,7 @@ fn build_shortcuts_window() -> gtk4::ShortcutsWindow {
     pane_group.add_shortcut(&shortcut(&accel(A::ResizeUp), "Move Divider Up"));
     pane_group.add_shortcut(&shortcut(&accel(A::ResizeDown), "Move Divider Down"));
     pane_group.add_shortcut(&shortcut(&accel(A::EqualizeSplits), "Equalize Splits"));
+    pane_group.add_shortcut(&shortcut(&accel(A::TogglePaneZoom), "Toggle Pane Zoom")); // pane-zoom
     pane_section.add_group(&pane_group);
     // tabs
     let tab_group = gtk4::ShortcutsGroup::builder()

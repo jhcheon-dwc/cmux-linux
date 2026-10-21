@@ -323,6 +323,11 @@ pub fn format_response(method: &str, result: &Value, json_mode: bool, color: boo
             }
         }
 
+        // pane-zoom
+        "pane.zoom" => {
+            if bool_field(result, &["zoomed"]) { "Zoomed".to_string() } else { "Not zoomed".to_string() }
+        }
+
         // Browser list: human-readable table
         "browser.list" => format_browser_list(result, color),
 

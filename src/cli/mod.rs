@@ -221,6 +221,16 @@ pub enum Commands {
     },
     /// Give all panes of the current workspace equal space
     EqualizePanes,
+    // pane-zoom
+    /// Toggle zoom of the focused pane: it fills the whole workspace
+    ZoomPane {
+        /// Zoom (no-op when already zoomed)
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Show all panes again
+        #[arg(long)]
+        off: bool,
+    },
     // notifications
     /// Send a notification (sidebar attention + desktop notification + hook)
     Notify {
@@ -797,6 +807,11 @@ fn command_to_rpc(cmd: &Commands) -> (&'static str, serde_json::Value) {
             ("pane.resize", json!({"direction": direction, "amount": amount}))
         }
         Commands::EqualizePanes => ("pane.equalize", json!({})),
+        // pane-zoom
+        Commands::ZoomPane { on, off } => {
+            let mode = if *on { "on" } else if *off { "off" } else { "toggle" };
+            ("pane.zoom", json!({"mode": mode}))
+        }
         // notifications
         Commands::Notify { title, body, surface, workspace } => {
             let mut p = serde_json::Map::new();
@@ -1064,6 +1079,15 @@ mod tests {
             ("surface.paste", json!({"text": "ls", "id": "u1", "submit": true}))
         );
         assert_eq!(rpc(&["paste", "ls"]), ("surface.paste", json!({"text": "ls"})));
+    }
+
+    // pane-zoom
+    #[test]
+    fn zoom_pane_modes() {
+        assert_eq!(rpc(&["zoom-pane"]), ("pane.zoom", json!({"mode": "toggle"})));
+        assert_eq!(rpc(&["zoom-pane", "--on"]), ("pane.zoom", json!({"mode": "on"})));
+        assert_eq!(rpc(&["zoom-pane", "--off"]), ("pane.zoom", json!({"mode": "off"})));
+        assert!(Cli::try_parse_from(["cmux", "zoom-pane", "--on", "--off"]).is_err());
     }
 
     #[test]

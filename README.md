@@ -158,6 +158,7 @@ Windows 시작프로그램의 `wslg-input.lnk`(`Win+R` → `shell:startup`)와 `
 | ``Ctrl+Alt+` `` | 직전에 포커스했던 창으로 돌아가기 | `focus_last_pane` |
 | `Ctrl+Alt+Shift+←/→/↑/↓` | 현재 창에 가장 가까운 분할선을 그 방향으로 5% 이동 | `resize_left` / `resize_right` / `resize_up` / `resize_down` |
 | `Ctrl+Alt+=` | 모든 분할을 같은 크기로 | `equalize_splits` |
+| `Ctrl+Shift+Enter` | 현재 창을 워크스페이스 전체로 확대 / 되돌리기 (tmux의 zoom) | `toggle_pane_zoom` |
 | `Ctrl+Shift+F` | 찾기 바 (`Enter`/`Shift+Enter`로 다음/이전, `Esc`로 닫기) | (변경 불가) |
 | `Ctrl+Shift+S` | SSH 워크스페이스 | `new_ssh_workspace` |
 | `Ctrl+Shift+B` / `Ctrl+Shift+Q` | 브라우저 미리보기 열기 / 닫기 | `browser_open` / `browser_close` |
@@ -175,7 +176,8 @@ equalize_splits = "<Ctrl><Alt>0"
 
 - `Ctrl+[`는 터미널에서 `Esc`와 같은 키입니다. vim 등에서 `Ctrl+[`를 `Esc`로 쓴다면 위처럼 `prev_workspace`를 바꾸고 `Ctrl+Shift+[`를 쓰세요.
 - 새 창/워크스페이스의 작업 디렉터리는 셸이 OSC 7로 알린 경로를 먼저 쓰고, 없으면 원래 창 셸의 현재 디렉터리(`/proc`)를 씁니다.
-- 같은 동작은 소켓 CLI로도 할 수 있습니다: `cmux focus-pane-number 2`, `cmux last-pane`, `cmux resize-pane left --amount 0.1`, `cmux equalize-panes`.
+- 창 확대(`Ctrl+Shift+Enter`)는 다른 창을 숨길 뿐 닫지 않습니다. 확대된 창은 점선 테두리로 표시되고, 분할을 새로 만들거나 창을 닫거나 다른 창으로 포커스를 옮기면(tmux처럼) 원래 배치로 돌아갑니다. 확대 상태는 워크스페이스마다 따로 유지되며 세션에는 저장되지 않습니다.
+- 같은 동작은 소켓 CLI로도 할 수 있습니다: `cmux focus-pane-number 2`, `cmux last-pane`, `cmux resize-pane left --amount 0.1`, `cmux equalize-panes`, `cmux zoom-pane [--on|--off]`.
 
 ## 탭
 
@@ -245,6 +247,7 @@ command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
 `Ctrl+Shift+B`로 현재 창 오른쪽에 브라우저 미리보기 창이 열립니다. 헤드리스 Chrome 화면을 받아 보여 주는 방식이라, 먼저 `contrib/wsl/setup.sh --skip-build --browser`로 Chrome을 설치해야 합니다.
 
 - 주소창에 주소를 넣고 `Enter`(`https://`는 자동으로 붙음). 페이지를 클릭·스크롤·타이핑하면 Chrome으로 전달됩니다.
+- 미리보기는 워크스페이스 전체를 채운 상태로 열립니다. 주소창 줄의 `⤡`/`⤢` 버튼이나 `Ctrl+Shift+Enter`로 터미널과 나란히 보기 / 전체 보기를 오갑니다.
 - 닫기: 주소창 줄 오른쪽 끝의 `✕`, `Ctrl+Shift+Q`, 또는 오른쪽 클릭 → **Close Browser**.
 - 에이전트가 `cmux browser ...` 명령으로 같은 브라우저를 조작할 수 있습니다(`cmux browser --help`).
 
@@ -276,7 +279,7 @@ command = 'echo "$CMUX_NOTIFICATION_TITLE" >> ~/cmux-notifications.log'
 | 창마다 가로 탭 | 새 탭, 전환, 닫기, 이름 바꾸기, 드래그로 순서 변경, 세션 복원 | [탭](#탭) |
 | Claude Code 상태 표시 | 사이드바에 실행 중 / 입력 필요 / 대기 / 오류, 진행률, 읽음 표시 | [Claude Code 상태 표시](#claude-code-상태-표시) |
 | 알림 | 사이드바 점, 보고 있는 창이면 생략, 사용자 훅, `cmux notify`, 알림 클릭 시 해당 워크스페이스로 이동 | [알림](#알림) |
-| 창 이동 | 번호로 이동, 직전 창으로 돌아가기, 키보드로 분할선 이동, 균등 분할, 작업 디렉터리 상속 | [단축키](#단축키) |
+| 창 이동 | 번호로 이동, 직전 창으로 돌아가기, 키보드로 분할선 이동, 균등 분할, 창 확대(zoom), 작업 디렉터리 상속 | [단축키](#단축키) |
 | 세션 복원 | 재부팅 후에도 워크스페이스·분할·탭과 **각 창의 작업 디렉터리** 복원 (`cd`하면 5초 안에 저장) | — |
 | 터미널 | 찾기 바(`Ctrl+Shift+F`), 링크 열기(Windows 브라우저), 창 제목 표시 | — |
 | 소켓/CLI | `send-text`/`read-text`, `paste --submit`, 키 조합 전송(`send-key ctrl+c`), `current`, `read-selection`, 이전 워크스페이스 | `cmux --help` |

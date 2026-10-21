@@ -169,6 +169,11 @@ pub fn install_shortcuts(
                     handle_equalize_splits(&state);
                     gtk4::glib::Propagation::Stop
                 }
+                // pane-zoom
+                Some(ShortcutAction::TogglePaneZoom) => {
+                    handle_pane_zoom(&state, None);
+                    gtk4::glib::Propagation::Stop
+                }
                 // -- tabs --
                 Some(ShortcutAction::NewTab) => {
                     crate::tabs::handle_new_tab(&state);
@@ -343,6 +348,15 @@ pub fn handle_equalize_splits(state: &Rc<RefCell<AppState>>) {
     save_session_after_layout(state);
 }
 
+/// pane-zoom: zoom (`Some(true)`), unzoom (`Some(false)`) or toggle (`None`)
+/// the active pane of the active workspace (Ctrl+Shift+Enter). Returns whether
+/// the workspace is zoomed afterwards, or None without a workspace.
+pub fn handle_pane_zoom(state: &Rc<RefCell<AppState>>, on: Option<bool>) -> Option<bool> {
+    // try_borrow_mut: also runs from the preview's nav-bar button.
+    let mut s = state.try_borrow_mut().ok()?;
+    Some(s.active_split_engine_mut()?.set_zoom(on))
+}
+
 /// Save the session once GTK has re-allocated the panes: split ratios are
 /// read from live Paned sizes, and nested Paneds only learn their new size
 /// on the next layout pass.
@@ -395,6 +409,11 @@ pub fn handle_browser_open(state: &Rc<RefCell<AppState>>) {
     let Some(widgets) = pane_result else {
         return;
     };
+    // pane-zoom: the preview opens filling the workspace; its nav-bar button
+    // (or Ctrl+Shift+Enter) puts the terminal back beside it.
+    if let Some(engine) = state.borrow_mut().active_split_engine_mut() {
+        engine.zoom_pane(widgets.pane_id);
+    }
     let picture = widgets.picture.clone();
     let url_entry = widgets.url_entry.clone();
     let picture_ref = picture.clone();

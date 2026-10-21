@@ -39,6 +39,8 @@ pub enum SplitNode {
         #[allow(dead_code)] // Kept alive for GTK widget tree reference counting
         url_entry: gtk4::Entry,
         uuid: Uuid,
+        /// pane-zoom: nav-bar full-pane toggle; its icon follows the zoom state.
+        zoom_btn: gtk4::Button,
     },
     Split {
         orientation: gtk4::Orientation,
@@ -364,6 +366,20 @@ pub struct SplitEngine {
     focus_history: FocusHistory,
     /// UUID of the owning workspace, exported to new panes as CMUX_WORKSPACE_ID.
     workspace_uuid: Uuid,
+    /// pane-zoom: set while one pane fills the workspace.
+    zoom: Option<PaneZoom>,
+}
+
+/// pane-zoom: a pane enlarged to fill its workspace (tmux zoom). The sibling
+/// subtree at every split on the path from the root is hidden rather than
+/// reparented (moving a GLArea unrealizes it and breaks its Ghostty surface):
+/// a GtkPaned with one invisible child gives the other all of its space and
+/// hides the handle, and keeps its divider position for unzoom.
+struct PaneZoom {
+    pane_id: u64,
+    hidden: Vec<gtk4::Widget>,
+    /// Widget carrying the `pane-zoomed` CSS hint.
+    marked: gtk4::Widget,
 }
 
 impl SplitEngine {
@@ -394,6 +410,7 @@ impl SplitEngine {
             ghostty_app,
             focus_history: FocusHistory::default(),
             workspace_uuid: ids.workspace,
+            zoom: None,
         }
     }
 
@@ -450,6 +467,7 @@ impl SplitEngine {
             ghostty_app,
             focus_history: FocusHistory::default(),
             workspace_uuid,
+            zoom: None,
         })
     }
 
@@ -655,6 +673,7 @@ impl SplitEngine {
     }
 
     pub fn split_active(&mut self, orientation: gtk4::Orientation) -> Option<u64> {
+        self.unzoom(); // pane-zoom: a new split shows the whole layout again
         self.front_active_tab();
         let active_id = self.active_pane_id;
         let new_pane_id = self.next_pane_id;
@@ -752,6 +771,7 @@ impl SplitEngine {
     /// Returns (new_pane_id, picture_widget, url_entry) so the caller can wire streaming and URL navigation.
     /// The active terminal pane stays on the left and retains focus.
     pub fn split_active_with_preview(&mut self) -> Option<crate::browser::PreviewPaneWidgets> {
+        self.unzoom(); // pane-zoom
         self.front_active_tab();
         let active_id = self.active_pane_id;
         let new_pane_id = self.next_pane_id;
@@ -804,6 +824,7 @@ impl SplitEngine {
             picture: widgets.picture.clone(),
             url_entry: widgets.url_entry.clone(),
             uuid: widgets.uuid,
+            zoom_btn: widgets.zoom_btn.clone(),
         };
 
         // Replace active leaf with Split(active_leaf, preview_node) -- vertical, preview on right
@@ -995,6 +1016,11 @@ impl SplitEngine {
     pub fn close_active(&mut self) -> Option<u64> {
         let active_id = self.active_pane_id;
 
+        // pane-zoom: closing a pane (or the zoomed pane's last tab) restores the layout.
+        if self.tab_location(active_id).is_none_or(|(_, _, count)| count <= 1) {
+            self.unzoom();
+        }
+
         // tabs: a pane with several tabs loses only its active tab.
         if self.tab_location(active_id).is_some_and(|(_, _, count)| count > 1) {
             return self.close_tab(active_id).then_some(self.active_pane_id);
@@ -1101,6 +1127,7 @@ impl SplitEngine {
         if !matches!(self.root.find_node(pane_id), Some(SplitNode::Preview { .. })) {
             return None;
         }
+        self.unzoom(); // pane-zoom
         let surviving_id = remove_leaf_from_tree(&mut self.root, pane_id)?;
         self.focus_history.forget(pane_id);
         if self.active_pane_id == pane_id {
@@ -1165,6 +1192,10 @@ impl SplitEngine {
     /// Move the active pane to `new_id`: Ghostty focus, the active-pane CSS class
     /// (which focus restoration after divider drags relies on) and GTK focus.
     fn set_active_pane(&mut self, new_id: u64) {
+        // pane-zoom: like tmux, moving to another pane leaves zoom.
+        if new_id != self.active_pane_id {
+            self.unzoom();
+        }
         self.focus_history.record(self.active_pane_id, new_id);
         // Unfocus old surface.
         if let Some(old_surface) = self.find_surface(self.active_pane_id) {
@@ -1234,6 +1265,7 @@ impl SplitEngine {
     /// by `fraction` of that split's size (Right/Down move it right/down).
     /// Returns false when the active pane has no such ancestor.
     pub fn resize_active(&mut self, direction: FocusDirection, fraction: f64) -> bool {
+        self.unzoom(); // pane-zoom: dividers are hidden while zoomed
         let horizontal = matches!(direction, FocusDirection::Left | FocusDirection::Right);
         let Some(path) = nearest_split_along(&self.root, self.active_pane_id, horizontal) else {
             return false;
@@ -1256,8 +1288,92 @@ impl SplitEngine {
         if !matches!(self.root, SplitNode::Split { .. }) {
             return;
         }
+        self.unzoom(); // pane-zoom
         equalize_node(&self.root);
         schedule_resize_recovery();
+    }
+
+    // ── pane-zoom ────────────────────────────────────────────────────────────
+
+    /// The pane filling the workspace, if any. (tabs: the id of the tab that
+    /// was in front when the pane was zoomed.)
+    pub fn zoomed_pane(&self) -> Option<u64> {
+        self.zoom.as_ref().map(|z| z.pane_id)
+    }
+
+    /// Enlarge `pane_id` to fill the workspace, making it the active pane.
+    /// Returns false when there is nothing to hide (a single pane) or no such pane.
+    pub fn zoom_pane(&mut self, pane_id: u64) -> bool {
+        if self.zoom.as_ref().is_some_and(|z| z.pane_id == pane_id) {
+            return true;
+        }
+        let Some(paths) = zoom_hidden_paths(&self.root, pane_id) else {
+            return false;
+        };
+        if paths.is_empty() {
+            return false;
+        }
+        // Switching panes unzooms; the zoomed pane has to be active so input
+        // never goes to a hidden one.
+        if pane_id != self.active_pane_id {
+            self.set_active_pane(pane_id);
+        }
+        self.unzoom();
+        let hidden: Vec<gtk4::Widget> = paths
+            .iter()
+            .filter_map(|path| node_at_path(&self.root, path))
+            .map(|node| node.widget())
+            .collect();
+        for widget in &hidden {
+            widget.set_visible(false);
+        }
+        let Some(target) = self.root.find_node(pane_id) else {
+            return false;
+        };
+        let marked = target.widget();
+        marked.add_css_class("pane-zoomed");
+        self.zoom = Some(PaneZoom { pane_id, hidden, marked });
+        self.sync_zoom_buttons();
+        schedule_resize_recovery();
+        true
+    }
+
+    /// Show the whole layout again. Returns false when nothing was zoomed.
+    pub fn unzoom(&mut self) -> bool {
+        let Some(zoom) = self.zoom.take() else {
+            return false;
+        };
+        for widget in &zoom.hidden {
+            widget.set_visible(true);
+        }
+        zoom.marked.remove_css_class("pane-zoomed");
+        self.sync_zoom_buttons();
+        schedule_resize_recovery();
+        true
+    }
+
+    /// Zoom (`Some(true)`), unzoom (`Some(false)`) or toggle (`None`) the
+    /// active pane. Returns whether the workspace is zoomed afterwards.
+    pub fn set_zoom(&mut self, on: Option<bool>) -> bool {
+        let on = on.unwrap_or(self.zoom.is_none());
+        if on {
+            self.zoom_pane(self.active_pane_id);
+        } else {
+            self.unzoom();
+        }
+        self.zoom.is_some()
+    }
+
+    /// Point every browser preview's full-pane button at the current state.
+    fn sync_zoom_buttons(&self) {
+        let zoomed = self.zoom.is_some();
+        let mut ids = Vec::new();
+        self.root.collect_pane_ids(&mut ids);
+        for id in ids {
+            if let Some(SplitNode::Preview { zoom_btn, .. }) = self.root.find_node(id) {
+                crate::browser::set_zoom_button_state(zoom_btn, zoomed);
+            }
+        }
     }
 
     /// The active pane's Ghostty surface and UUID, used as the source for
@@ -1988,6 +2104,28 @@ pub(crate) fn node_at_path<'a, T: PaneTree>(root: &'a T, path: &[Side]) -> Optio
         }
     }
     Some(node)
+}
+
+/// pane-zoom: paths of the subtrees to hide so that `pane_id` fills the tree:
+/// at every split on the way down, the child that does not lead to the pane.
+/// Empty when `pane_id` is the root itself; None when it is not in the tree.
+pub(crate) fn zoom_hidden_paths<T: PaneTree>(root: &T, pane_id: u64) -> Option<Vec<Vec<Side>>> {
+    let mut path = Vec::new();
+    if !path_to_pane(root, pane_id, &mut path) {
+        return None;
+    }
+    Some(
+        (0..path.len())
+            .map(|depth| {
+                let mut sibling = path[..depth].to_vec();
+                sibling.push(match path[depth] {
+                    Side::Start => Side::End,
+                    Side::End => Side::Start,
+                });
+                sibling
+            })
+            .collect(),
+    )
 }
 
 /// New divider position after moving it by `fraction` of `size` (at least one
@@ -2933,6 +3071,32 @@ mod tests {
         // node_at_path resolves the returned path to that split.
         let found = node_at_path(&tree, &[Side::Start, Side::End]).unwrap();
         assert!(matches!(found, SplitNodeData::Split { orientation, .. } if orientation == "vertical"));
+    }
+
+    // pane-zoom
+    #[test]
+    fn zoom_hides_the_sibling_at_every_split_on_the_path() {
+        use Side::{End, Start};
+        let tree = sample_tree();
+        // Pane 3 = root.Start.End.End: hide pane 4, pane 1 and pane 2.
+        assert_eq!(
+            zoom_hidden_paths(&tree, 3),
+            Some(vec![vec![End], vec![Start, Start], vec![Start, End, Start]])
+        );
+        // Pane 4 sits right under the root: only the other half is hidden.
+        assert_eq!(zoom_hidden_paths(&tree, 4), Some(vec![vec![Start]]));
+        let hidden: Vec<u64> = zoom_hidden_paths(&tree, 1)
+            .unwrap()
+            .iter()
+            .flat_map(|p| terminal_panes_in_order(node_at_path(&tree, p).unwrap()))
+            .collect();
+        assert_eq!(hidden, vec![4, 2, 3]);
+        // A lone pane has nothing to hide; unknown panes cannot be zoomed.
+        assert_eq!(zoom_hidden_paths(&leaf(7), 7), Some(vec![]));
+        assert_eq!(zoom_hidden_paths(&tree, 99), None);
+        // Browser previews zoom like terminals.
+        let with_preview = node("horizontal", leaf(1), preview(2));
+        assert_eq!(zoom_hidden_paths(&with_preview, 2), Some(vec![vec![Start]]));
     }
 
     #[test]

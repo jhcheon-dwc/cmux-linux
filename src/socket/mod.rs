@@ -290,6 +290,12 @@ async fn dispatch_line(
             resp_tx,
         },
         "pane.equalize" => commands::SocketCommand::PaneEqualize { req_id: req_id.clone(), resp_tx },
+        // pane-zoom
+        "pane.zoom" => commands::SocketCommand::PaneZoom {
+            req_id: req_id.clone(),
+            mode: params.get("mode").and_then(|v| v.as_str()).unwrap_or("toggle").to_string(),
+            resp_tx,
+        },
         // terminal-actions
         "surface.find" => commands::SocketCommand::SurfaceFind {
             req_id: req_id.clone(),

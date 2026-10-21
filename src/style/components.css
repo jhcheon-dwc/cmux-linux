@@ -112,6 +112,8 @@ paned > separator:hover { background: var(--color-focus); }
 .cmux-pane, .preview-container { border: 1px solid transparent; outline: none; }
 .cmux-pane.active-pane, .cmux-pane.active-pane:backdrop,
 .preview-container.active-pane { border-color: var(--color-focus); }
+/* pane-zoom: a dashed outline marks a pane zoomed over hidden siblings. */
+.cmux-pane.pane-zoomed, .pane-zoomed .cmux-pane { border-style: dashed; }
 
 /* ── Per-pane tab bar ─────────────────────────────────────────────────────── */
 .cmux-tab-bar { background-color: var(--color-surface-chrome); min-height: 30px; }
@@ -184,6 +186,8 @@ button.browser-nav-btn:disabled { opacity: 0.4; }
 .browser-nav-go { color: var(--color-text-primary); font-weight: 700; }
 .browser-nav-devtools { margin-left: var(--space-xs); }
 .browser-nav-devtools:checked { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
+.browser-nav-zoom { margin-left: var(--space-xxs); }
+.browser-nav-zoom.zoomed { background-color: var(--color-surface-hover); color: var(--color-text-primary); }
 .devtools-overlay { background-color: alpha(var(--color-surface-sunken), 0.92); }
 .devtools-snapshot { color: var(--color-text-primary); font-family: monospace; font-size: var(--font-size-body-sm); padding: var(--space-xl); }
 

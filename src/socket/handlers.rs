@@ -265,6 +265,8 @@ pub fn handle_socket_command(
                 "debug.layout", "debug.type",
                 // pane-nav
                 "pane.focus_number", "pane.resize", "pane.equalize",
+                // pane-zoom
+                "pane.zoom",
                 // terminal-actions
                 "surface.find", "surface.find_next", "surface.find_close", "surface.find_status",
                 // agent-status
@@ -792,11 +794,12 @@ pub fn handle_socket_command(
             let s = state.borrow();
             let mut panes: Vec<Value> = Vec::new();
             for (ws_idx, (ws, engine)) in s.workspaces.iter().zip(s.split_engines.iter()).enumerate() {
-                for (pane_uuid, _pane_id, active) in engine.all_panes() {
+                for (pane_uuid, pane_id, active) in engine.all_panes() {
                     panes.push(json!({
                         "uuid": pane_uuid.to_string(),
                         "workspace_uuid": ws.uuid.to_string(),
                         "active": active && ws_idx == s.active_index,
+                        "zoomed": engine.zoomed_pane() == Some(pane_id), // pane-zoom
                     }));
                 }
             }
@@ -1119,6 +1122,29 @@ pub fn handle_socket_command(
             // SOCK-05: layout-only; does not move focus.
             crate::shortcuts::handle_equalize_splits(state);
             let _ = resp_tx.send(ok(req_id, json!({})));
+        }
+
+        // pane-zoom
+        SocketCommand::PaneZoom { req_id, mode, resp_tx } => {
+            // SOCK-05: layout-only; zooms the already active pane.
+            let on = match mode.as_str() {
+                "toggle" => Some(None),
+                "on" => Some(Some(true)),
+                "off" => Some(Some(false)),
+                _ => None,
+            };
+            let Some(on) = on else {
+                let _ = resp_tx.send(err(req_id, "invalid_params", "mode must be toggle, on or off"));
+                return;
+            };
+            match crate::shortcuts::handle_pane_zoom(state, on) {
+                Some(zoomed) => {
+                    let _ = resp_tx.send(ok(req_id, json!({"zoomed": zoomed})));
+                }
+                None => {
+                    let _ = resp_tx.send(err(req_id, "no_workspace", "no active workspace"));
+                }
+            }
         }
 
         // socket-cli

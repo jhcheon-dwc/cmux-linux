@@ -299,11 +299,23 @@ pub struct PreviewPaneWidgets {
     pub go_btn: gtk4::Button,
     pub devtools_btn: gtk4::ToggleButton,
     pub close_btn: gtk4::Button,
+    pub zoom_btn: gtk4::Button, // pane-zoom
     /// Invisible overlay child with the Picture's allocation; its `resize`
     /// signal drives viewport updates (GtkPicture has no resize signal).
     pub viewport_sensor: gtk4::DrawingArea,
     pub pane_id: u64,
     pub uuid: Uuid,
+}
+
+/// pane-zoom: show whether the preview fills the workspace (⤡ restores the
+/// side-by-side layout, ⤢ enlarges the preview).
+pub fn set_zoom_button_state(btn: &gtk4::Button, zoomed: bool) {
+    btn.set_label(if zoomed { "\u{2921}" } else { "\u{2922}" });
+    if zoomed {
+        btn.add_css_class("zoomed");
+    } else {
+        btn.remove_css_class("zoomed");
+    }
 }
 
 /// Create a browser preview pane widget (nav bar + Picture + status overlay).
@@ -378,6 +390,15 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     close_btn.add_css_class("browser-nav-close");
     close_btn.set_tooltip_text(Some("Close Browser (Ctrl+Shift+Q)"));
 
+    // pane-zoom: full pane <-> side by side; runs win.toggle-pane-zoom on the
+    // active pane, which a click in the preview has just made this one.
+    let zoom_btn = gtk4::Button::new();
+    zoom_btn.add_css_class("browser-nav-btn");
+    zoom_btn.add_css_class("browser-nav-zoom");
+    zoom_btn.set_tooltip_text(Some("Toggle Full Pane (Ctrl+Shift+Enter)"));
+    zoom_btn.set_action_name(Some("win.toggle-pane-zoom"));
+    set_zoom_button_state(&zoom_btn, false);
+
     // Navigation bar: horizontal box with buttons + URL entry
     let nav_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     nav_bar.add_css_class("browser-nav-bar");
@@ -387,6 +408,7 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
     nav_bar.append(&url_entry);
     nav_bar.append(&go_btn);
     nav_bar.append(&devtools_btn);
+    nav_bar.append(&zoom_btn); // pane-zoom
     nav_bar.append(&close_btn);
 
     // Vertical box: nav bar on top, picture overlay below
@@ -404,6 +426,7 @@ pub fn create_preview_pane(next_pane_id: u64) -> PreviewPaneWidgets {
         go_btn,
         devtools_btn,
         close_btn,
+        zoom_btn, // pane-zoom
         viewport_sensor,
         pane_id: next_pane_id,
         uuid,
