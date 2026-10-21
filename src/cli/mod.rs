@@ -547,6 +547,31 @@ pub enum BrowserCommand {
     /// Disable browser streaming
     #[command(name = "stream-disable")]
     StreamDisable,
+    // app-idb
+    /// IndexedDB of the active page: list databases (with stores/indexes),
+    /// page through a store's records, clear a store or delete a database
+    Idb {
+        /// Database name (alone: show only its schema; with STORE: read
+        /// records; with --delete: delete it)
+        database: Option<String>,
+        /// Object store name (omit both DB and STORE to list databases)
+        store: Option<String>,
+        /// Clear all records of STORE
+        #[arg(long, requires = "store", conflicts_with = "delete")]
+        clear: bool,
+        /// Delete the database DB
+        #[arg(long, requires = "database", conflicts_with = "store")]
+        delete: bool,
+        /// Read records through this index instead of the primary key
+        #[arg(long, requires = "store")]
+        index: Option<String>,
+        /// Number of records to skip
+        #[arg(long, default_value_t = 0)]
+        skip: u64,
+        /// Maximum number of records to return
+        #[arg(long, default_value_t = 50)]
+        limit: u64,
+    },
 }
 
 /// Run the CLI with the parsed arguments.
@@ -739,6 +764,27 @@ fn browser_command_to_rpc(cmd: &BrowserCommand) -> (&'static str, serde_json::Va
         }
         BrowserCommand::StreamEnable => ("browser.stream.enable", json!({})),
         BrowserCommand::StreamDisable => ("browser.stream.disable", json!({})),
+        // app-idb
+        BrowserCommand::Idb { database, store, clear, delete, index, skip, limit } => {
+            match (database, store) {
+                (Some(db), _) if *delete => (
+                    "browser.indexeddb_delete",
+                    json!({"database": db}),
+                ),
+                (Some(db), Some(st)) if *clear => (
+                    "browser.indexeddb_clear",
+                    json!({"database": db, "store": st}),
+                ),
+                (Some(db), Some(st)) => (
+                    "browser.indexeddb_data",
+                    json!({
+                        "database": db, "store": st,
+                        "index": index, "skip": skip, "limit": limit,
+                    }),
+                ),
+                _ => ("browser.indexeddb_databases", json!({"database": database})),
+            }
+        }
     }
 }
 
@@ -1179,5 +1225,44 @@ mod tests {
         assert_eq!(unescape_text("keep \\q"), "keep \\q");
         assert_eq!(unescape_text("trailing\\"), "trailing\\");
         assert_eq!(unescape_text("한글"), "한글");
+    }
+
+    // app-idb
+    fn idb_rpc(args: &[&str]) -> Result<(&'static str, serde_json::Value), clap::Error> {
+        let mut argv = vec!["cmux", "browser", "idb"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv).map(|cli| command_to_rpc(&cli.command))
+    }
+
+    #[test]
+    fn idb_cli_maps_to_daemon_actions() {
+        assert_eq!(
+            idb_rpc(&[]).unwrap(),
+            ("browser.indexeddb_databases", json!({"database": null}))
+        );
+        assert_eq!(
+            idb_rpc(&["d"]).unwrap(),
+            ("browser.indexeddb_databases", json!({"database": "d"}))
+        );
+        assert_eq!(
+            idb_rpc(&["앱DB", "notes", "--skip", "10", "--limit", "5"]).unwrap(),
+            ("browser.indexeddb_data", json!({
+                "database": "앱DB", "store": "notes",
+                "index": null, "skip": 10, "limit": 5,
+            }))
+        );
+        assert_eq!(idb_rpc(&["d", "s", "--index", "by_t"]).unwrap().1["index"], "by_t");
+        assert_eq!(
+            idb_rpc(&["d", "s", "--clear"]).unwrap(),
+            ("browser.indexeddb_clear", json!({"database": "d", "store": "s"}))
+        );
+        assert_eq!(
+            idb_rpc(&["d", "--delete"]).unwrap(),
+            ("browser.indexeddb_delete", json!({"database": "d"}))
+        );
+        assert!(idb_rpc(&["d", "--clear"]).is_err());
+        assert!(idb_rpc(&["d", "--index", "i"]).is_err());
+        assert!(idb_rpc(&["--delete"]).is_err());
+        assert!(idb_rpc(&["d", "s", "--delete"]).is_err());
     }
 }

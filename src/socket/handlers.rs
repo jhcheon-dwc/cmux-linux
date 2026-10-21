@@ -264,6 +264,9 @@ pub fn handle_socket_command(
                 "browser.network.list", "browser.network.clear", "browser.devtools.url",
                 "browser.highlight",
                 "browser.state.save", "browser.state.load",
+                // app-idb
+                "browser.indexeddb_databases", "browser.indexeddb_data",
+                "browser.indexeddb_clear", "browser.indexeddb_delete",
                 // Debug
                 "debug.layout", "debug.type",
                 // pane-nav
